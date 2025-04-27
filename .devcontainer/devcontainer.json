@@ -1,0 +1,28 @@
+{
+    "name": "Embedded Rust Development",
+    "build": {
+        "args": {
+            "CONTAINER_USER": "${localEnv:USER}"
+        },
+        "context": "..",
+        "dockerfile": "Dockerfile"
+    },
+    "containerUser": "${localEnv:USER}",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "files.insertFinalNewline": true,
+                "files.trimTrailingWhitespace": true
+            },
+            "extensions": [
+                "github.copilot",
+                "marus25.cortex-debug",
+                "mhutchie.git-graph",
+                "rust-lang.rust-analyzer",
+            ]
+        }
+    },
+    "features": {
+        "./setup-devcontainer-cli": {}
+    }
+}

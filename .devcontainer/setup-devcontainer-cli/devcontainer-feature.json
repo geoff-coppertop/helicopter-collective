@@ -1,0 +1,7 @@
+{
+    "name": "Setup devcontainer CLI",
+    "id": "setup-devcontainer-cli",
+    "version": "1.0.0",
+    "description": "Sets up the CLI for devcontainers",
+    "postCreateCommand": "/tmp/setup-devcontainer-cli/configure.sh"
+}

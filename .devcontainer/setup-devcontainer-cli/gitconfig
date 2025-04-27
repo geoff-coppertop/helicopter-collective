@@ -1,0 +1,41 @@
+[alias]
+	amd = commit --amend
+	dft = difftool
+	l   = log --pretty=oneline -n 50 --graph --abbrev-commit
+	lnc = log --pretty=format:"%h\\ %s"
+	met = mergetool
+	pgh = "!p() { git push origin -u $1; }; p"
+	pug = "!p() { git push origin HEAD:refs/for/$1; }; p"
+	sfc = "submodule foreach git clean -xffd"
+	sfn = "submodule foreach git clean -xffdn"
+	st  = status
+	upd = "submodule update --recursive --init"
+
+[color]
+	branch = auto
+	diff = auto
+	status = auto
+	ui = true
+
+[commit]
+	template = ~/.config/git/commit.template
+
+[core]
+	autocrlf = input
+	longpaths = true
+	whitespace = cr-at-eol,tab-in-indent
+
+[credential "https://github.com"]
+	helper =
+	helper = !/home/linuxbrew/.linuxbrew/bin/gh auth git-credential
+
+[credential "https://gist.github.com"]
+	helper =
+	helper = !/home/linuxbrew/.linuxbrew/bin/gh auth git-credential
+
+[init]
+	templateDir = ~/.config/git/
+
+[user]
+	name = Geoffrey Thomas
+	email = geoff.coppertop@gmail.com
