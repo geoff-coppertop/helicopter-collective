@@ -20,6 +20,7 @@
                 "marus25.cortex-debug",
                 "mhutchie.git-graph",
                 "ms-azuretools.vscode-docker",
+                "probe-rs.probe-rs-debugger",
                 "rust-lang.rust-analyzer"
             ]
         }

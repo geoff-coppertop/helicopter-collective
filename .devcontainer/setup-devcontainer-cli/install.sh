@@ -11,8 +11,7 @@ apt clean && \
 rm -rf /var/lib/apt/lists/*
 
 cargo install \
-    eza \
-    cargo-generate
+    eza
 
 cargo install zoxide --locked
 
@@ -24,6 +23,3 @@ mkdir -p /tmp/setup-devcontainer-cli
 cp ./* /tmp/setup-devcontainer-cli
 
 chown -R ${CONTAINER_USER}:${CONTAINER_USER} /tmp/setup-devcontainer-cli
-
-chown -R ${CONTAINER_USER}:${CONTAINER_USER} ${CARGO_HOME}/ \
-    && chmod -R +w ${HOME}/.cargo

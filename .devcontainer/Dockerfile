@@ -30,8 +30,6 @@ ENV HOME=/home/${CONTAINER_USER} \
 
 # Install rustup
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    # --default-toolchain stable \
-    # --profile minimal \
     --no-modify-path
 
 RUN rustup set profile minimal && \
@@ -39,6 +37,16 @@ RUN rustup set profile minimal && \
     rustup component add clippy llvm-tools rustfmt && \
     rustup target add thumbv7m-none-eabi
 
+RUN cargo install \
+    cargo-binstall \
+    cargo-generate \
+    flip-link
+
+RUN cargo binstall probe-rs-tools -y
+
 RUN chown -R ${CONTAINER_USER}:${CONTAINER_USER} /home/${CONTAINER_USER}/.rustup
+
+RUN chown -R ${CONTAINER_USER}:${CONTAINER_USER} ${CARGO_HOME}/ \
+    && chmod -R +w ${HOME}/.cargo
 
 CMD ["/bin/bash"]
