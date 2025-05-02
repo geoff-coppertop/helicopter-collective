@@ -24,3 +24,6 @@ mkdir -p /tmp/setup-devcontainer-cli
 cp ./* /tmp/setup-devcontainer-cli
 
 chown -R ${CONTAINER_USER}:${CONTAINER_USER} /tmp/setup-devcontainer-cli
+
+chown -R ${CONTAINER_USER}:${CONTAINER_USER} ${CARGO_HOME}/ \
+    && chmod -R +w ${HOME}/.cargo

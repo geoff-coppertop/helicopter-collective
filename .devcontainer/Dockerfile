@@ -1,11 +1,19 @@
-FROM rust:1.86-slim
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 
 ARG CONTAINER_USER=vscode
 
 RUN apt update && \
     apt install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        gcc \
         gdb-multiarch \
         git \
+        libc6-dev \
         libssl-dev \
         openocd \
         pkg-config \
@@ -13,15 +21,24 @@ RUN apt update && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Set users
+RUN adduser --disabled-password --gecos "" ${CONTAINER_USER}
+ENV HOME=/home/${CONTAINER_USER} \
+    USER=${CONTAINER_USER} \
+    CARGO_HOME=/home/${CONTAINER_USER}/.cargo \
+    PATH=/home/${CONTAINER_USER}/.cargo/bin:"$PATH"
+
+# Install rustup
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    # --default-toolchain stable \
+    # --profile minimal \
+    --no-modify-path
+
 RUN rustup set profile minimal && \
     rustup default 1.86.0 && \
     rustup component add clippy llvm-tools rustfmt && \
-    rustup target add thumbv7em-none-eabi && \
-    rustup target add thumbv7em-none-eabihf
+    rustup target add thumbv7m-none-eabi
 
-RUN adduser --disabled-password --gecos "" ${CONTAINER_USER}
-
-ENV USER=${CONTAINER_USER}
-USER ${CONTAINER_USER}
+RUN chown -R ${CONTAINER_USER}:${CONTAINER_USER} /home/${CONTAINER_USER}/.rustup
 
 CMD ["/bin/bash"]

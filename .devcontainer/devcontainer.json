@@ -12,13 +12,15 @@
         "vscode": {
             "settings": {
                 "files.insertFinalNewline": true,
-                "files.trimTrailingWhitespace": true
+                "files.trimTrailingWhitespace": true,
+                "terminal.integrated.shellIntegration.enabled": false
             },
             "extensions": [
                 "github.copilot",
                 "marus25.cortex-debug",
                 "mhutchie.git-graph",
-                "rust-lang.rust-analyzer",
+                "ms-azuretools.vscode-docker",
+                "rust-lang.rust-analyzer"
             ]
         }
     },
