@@ -1,0 +1,13 @@
+[package]
+name = "helicopter-collective"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cortex-m-rt = "0.7.5"
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+embassy-executor = { version = "0.7.0", features = ["nightly", "arch-cortex-m", "executor-thread"] }
+embassy-rp = { version = "0.4.0", features = ["binary-info", "critical-section-impl", "rp235xa", "time-driver"] }
+embassy-time = "0.4.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
