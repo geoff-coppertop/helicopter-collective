@@ -7,17 +7,18 @@ ARG CONTAINER_USER=vscode
 
 RUN apt update && \
     apt install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        gcc \
-        gdb-multiarch \
-        git \
-        libc6-dev \
-        libssl-dev \
-        openocd \
-        pkg-config \
-        udev && \
+    build-essential \
+    ca-certificates \
+    curl \
+    gcc \
+    gdb-multiarch \
+    git \
+    libc6-dev \
+    libssl-dev \
+    openocd \
+    pkg-config \
+    udev \
+    usbutils && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -33,9 +34,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     --no-modify-path
 
 RUN rustup set profile minimal && \
-    rustup default 1.86.0 && \
+    rustup default nightly-2025-05-09 && \
     rustup component add clippy llvm-tools rustfmt && \
-    rustup target add thumbv7m-none-eabi
+    rustup target add thumbv8m.main-none-eabihf
 
 RUN cargo install \
     cargo-binstall \

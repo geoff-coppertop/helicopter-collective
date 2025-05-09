@@ -11,8 +11,13 @@
     "customizations": {
         "vscode": {
             "settings": {
+                "editor.defaultFormatter": "rust-lang.rust-analyzer",
+                "editor.formatOnSave": true,
                 "files.insertFinalNewline": true,
                 "files.trimTrailingWhitespace": true,
+                "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
+                "rust-analyzer.check.allTargets": false,
+                "rust-analyzer.checkOnSave": true,
                 "terminal.integrated.shellIntegration.enabled": false
             },
             "extensions": [
@@ -27,5 +32,9 @@
     },
     "features": {
         "./setup-devcontainer-cli": {}
-    }
+    },
+    "mounts": [
+        "source=/dev/bus/usb/,target=/dev/bus/usb/,type=bind"
+    ],
+    "privileged": true
 }
