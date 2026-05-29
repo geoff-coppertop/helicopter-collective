@@ -1,33 +1,77 @@
 [alias]
-	amd = commit --amend
-	dft = difftool
-	l   = log --pretty=oneline -n 50 --graph --abbrev-commit
-	lnc = log --pretty=format:"%h\\ %s"
-	met = mergetool
-	pgh = "!p() { git push origin -u $1; }; p"
-	pug = "!p() { git push origin HEAD:refs/for/$1; }; p"
-	sfc = "submodule foreach git clean -xffd"
-	sfn = "submodule foreach git clean -xffdn"
-	st  = status
-	upd = "submodule update --recursive --init"
+	amd   = commit --amend
+	dft   = difftool
+	doze  = !git reset --hard && git clean -xffd
+	lnc   = log --pretty=format:"%h %s" --graph --decorate
+	met   = mergetool
+	nuke  = !git doze && git submodule foreach --recursive 'git doze'
+	pg    = push origin HEAD
+	pgs   = push --force-with-lease
+	pgt   = push --follow-tags
+	pgu   = !git push --set-upstream origin "$(git branch --show-current)"
+	prc   = !gh pr create --fill
+	prm   = !gh pr merge --squash
+	prs   = !gh pr status
+	prv   = !gh pr view --web
+	st    = status
+	terra = !git nuke && git upd
+	up    = pull --rebase
+	upd   = submodule update --recursive --init
+	wash  = !git clean -xffd && git submodule foreach --recursive 'git clean -xffd'
 
 [color]
 	branch = auto
-	diff = auto
+	diff   = auto
 	status = auto
-	ui = true
+	ui     = true
 
 [commit]
 	template = ~/.config/git/commit.template
 
 [core]
-	autocrlf = input
+	autocrlf  = input
+	editor    = vim
 	longpaths = true
 	whitespace = cr-at-eol,tab-in-indent
 
-[init]
-	templateDir = ~/.config/git/
+[diff]
+	guitool = vscode
+	tool    = vscode
 
-[user]
-	name = Geoffrey Thomas
-	email = geoff.coppertop@gmail.com
+[difftool]
+	prompt = false
+
+[difftool "vscode"]
+	cmd = code --wait --diff $LOCAL $REMOTE
+
+[fetch]
+	parallel          = 16
+	prune             = true
+	recurseSubmodules = false
+
+[init]
+	templateDir = ~/.config/git/template/
+
+[log]
+	follow = true
+
+[merge]
+	ff   = false
+	tool = vscode
+
+[mergetool "vscode"]
+	cmd           = code --wait $MERGED
+	keepbackup    = false
+	trustexitcode = true
+
+[pull]
+	rebase = true
+
+[rebase]
+	autoSquash = true
+
+[status]
+	submoduleSummary = true
+
+[submodule]
+	fetchJobs = 16

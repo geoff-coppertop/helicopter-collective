@@ -1,5 +1,5 @@
 # File system
-alias cd='z'
+alias cat='bat'
 alias ff="fzf --preview 'bat --style=numbers --color=always {}'"
 alias ls='eza -lh --group-directories-first --icons'
 alias lsa='ls -a'
