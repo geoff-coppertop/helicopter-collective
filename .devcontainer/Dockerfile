@@ -18,13 +18,16 @@ RUN apt update && \
     libssl-dev \
     openocd \
     pkg-config \
+    sudo \
     udev \
     usbutils && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Set users
-RUN adduser --disabled-password --gecos "" ${CONTAINER_USER}
+RUN adduser --disabled-password --gecos "" ${CONTAINER_USER} && \
+    echo "${CONTAINER_USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/${CONTAINER_USER} && \
+    chmod 0440 /etc/sudoers.d/${CONTAINER_USER}
 ENV HOME=/home/${CONTAINER_USER} \
     USER=${CONTAINER_USER} \
     CARGO_HOME=/home/${CONTAINER_USER}/.cargo \

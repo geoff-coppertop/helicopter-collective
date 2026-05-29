@@ -56,5 +56,6 @@
     "mounts": [
         "source=/dev/bus/usb/,target=/dev/bus/usb/,type=bind"
     ],
+    "postStartCommand": "sudo chown -R \"$(id -u):$(id -g)\" \"${containerWorkspaceFolder}/.git\"",
     "privileged": true
 }

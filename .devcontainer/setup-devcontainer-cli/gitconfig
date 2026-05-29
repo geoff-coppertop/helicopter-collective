@@ -34,6 +34,9 @@
 	longpaths = true
 	whitespace = cr-at-eol,tab-in-indent
 
+[safe]
+	directory = *
+
 [diff]
 	guitool = vscode
 	tool    = vscode
