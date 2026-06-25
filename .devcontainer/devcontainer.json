@@ -51,7 +51,7 @@
     },
     "features": {
         "ghcr.io/devcontainers/features/github-cli:1": {},
-        "./setup-devcontainer-cli": {}
+        "ghcr.io/geoff-coppertop/devcontainer-features/shell-baseline:1": {}
     },
     "mounts": [
         "source=/dev/bus/usb/,target=/dev/bus/usb/,type=bind"
