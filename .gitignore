@@ -12,6 +12,10 @@ target/
 !.vscode/tasks.json
 !.vscode/extensions.json
 
+# Claude Code: keep shared project config (settings.json, commands/,
+# agents/, skills/, hooks/) but ignore personal/per-developer overrides.
+.claude/settings.local.json
+
 # Added by cargo
 
 /target
