@@ -12,4 +12,5 @@ embassy-rp = { version = "0.4.0", features = ["binary-info", "critical-section-i
 embassy-time = "0.4.0"
 embedded-hal = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
-tmag5273 = { git = "https://github.com/dysonltd/tmag5273.git", version = "0.1.1" }
+# Temporarily disabled: dysonltd/tmag5273 repo is private (404 on fetch). Only used by examples/mag_read.rs.
+# tmag5273 = { git = "https://github.com/dysonltd/tmag5273.git", version = "0.1.1" }

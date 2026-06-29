@@ -1,9 +1,6 @@
 {
     "name": "Embedded Rust Development",
     "build": {
-        "args": {
-            "CONTAINER_USER": "${localEnv:USER}"
-        },
         "context": "..",
         "dockerfile": "Dockerfile"
     },
@@ -50,11 +47,26 @@
         }
     },
     "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "username": "${localEnv:USER}"
+        },
         "ghcr.io/devcontainers/features/github-cli:1": {},
-        "./setup-devcontainer-cli": {}
+        "ghcr.io/devcontainers/features/rust:1": {
+            "version": "nightly-2025-05-09",
+            "profile": "minimal",
+            "components": "clippy,llvm-tools,rustfmt",
+            "targets": "thumbv8m.main-none-eabihf"
+        },
+        "ghcr.io/geoff-coppertop/devcontainer-features/shell-baseline:1": {},
+        "ghcr.io/geoff-coppertop/devcontainer-features/embedded-rust-tools:1": {
+            "githubToken": "${localEnv:GITHUB_TOKEN}"
+        },
+        "ghcr.io/geoff-coppertop/devcontainer-features/claude-code:1": {}
     },
     "mounts": [
-        "source=/dev/bus/usb/,target=/dev/bus/usb/,type=bind"
+        "source=/dev/bus/usb/,target=/dev/bus/usb/,type=bind",
+        "source=claude-code-state,target=/home/${localEnv:USER}/.claude,type=volume"
     ],
-    "privileged": true
+    "privileged": true,
+    "runArgs": ["--userns=keep-id"]
 }
