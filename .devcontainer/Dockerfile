@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1
-FROM docker.io/library/debian:bookworm-slim
+FROM mcr.microsoft.com/devcontainers/base:debian
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 
-# OS-level packages. User creation, Rust toolchain, and embedded cargo tools
-# all come from devcontainer features (common-utils,
-# ghcr.io/devcontainers/features/rust,
+# OS-level packages. The container user is provided by the base image
+# (devcontainers/base ships `vscode` at UID 1000). Rust toolchain and
+# embedded cargo tools come from devcontainer features
+# (ghcr.io/devcontainers/features/rust,
 # ghcr.io/geoff-coppertop/devcontainer-features/embedded-rust-tools).
 RUN apt update && \
     apt install -y --no-install-recommends \

@@ -4,8 +4,6 @@
         "context": "..",
         "dockerfile": "Dockerfile"
     },
-    "containerUser": "${localEnv:USER}",
-    "updateRemoteUserUID": true,
     "customizations": {
         "vscode": {
             "settings": {
@@ -47,9 +45,6 @@
         }
     },
     "features": {
-        "ghcr.io/devcontainers/features/common-utils:2": {
-            "username": "${localEnv:USER}"
-        },
         "ghcr.io/devcontainers/features/github-cli:1": {},
         "ghcr.io/devcontainers/features/rust:1": {
             "version": "nightly-2025-05-09",
@@ -65,7 +60,7 @@
     },
     "mounts": [
         "source=/dev/bus/usb/,target=/dev/bus/usb/,type=bind",
-        "source=claude-code-state,target=/home/${localEnv:USER}/.claude,type=volume"
+        "source=claude-code-state,target=/home/vscode/.claude,type=volume"
     ],
     "privileged": true,
     "runArgs": ["--userns=keep-id"]
