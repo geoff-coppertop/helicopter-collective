@@ -324,10 +324,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <strong>LED blink rate</strong>
     <label>Interval (ms)</label>
     <input type="range" id="blink" min="50" max="2000" value="500"
-           oninput="dirty.blink=true;syncBlink(this.value)">
+           oninput="dirty.blink=true;syncBlink(this.value)" onchange="scheduleSetBlink()">
     <input type="number" id="blink-num" min="50" max="2000" value="500"
-           oninput="dirty.blink=true;syncBlink(this.value)">
-    <button onclick="setBlink()">Apply</button>
+           oninput="dirty.blink=true;syncBlink(this.value)" onchange="scheduleSetBlink()"
+           onfocus="this.select()" onkeydown="if(event.key==='Enter'){event.preventDefault();scheduleSetBlink();this.select();}">
   </div>
   <div class="card">
     <strong>mDNS name</strong>
@@ -374,10 +374,22 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       document.getElementById('blink').value=value;
       document.getElementById('blink-num').value=value;
     }
+    let blinkDebounce=null;
+    function scheduleSetBlink(){
+      clearTimeout(blinkDebounce);
+      blinkDebounce=setTimeout(setBlink,250);
+    }
+    let blinkInFlight=false;
     async function setBlink(){
-      const ms=document.getElementById('blink-num').value;
-      await fetch('/api/blink',{method:'POST',body:String(ms)});
-      dirty.blink=false;
+      if(blinkInFlight)return;
+      blinkInFlight=true;
+      try{
+        const ms=document.getElementById('blink-num').value;
+        await fetch('/api/blink',{method:'POST',body:String(ms)});
+        dirty.blink=false;
+      }finally{
+        blinkInFlight=false;
+      }
     }
     async function setName(){
       const n=document.getElementById('new-name').value.trim();
