@@ -353,6 +353,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     .copyline code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--code-fg);background:none;padding:0;user-select:all}
     .copyline button{margin:0;padding:.3em;line-height:1;font-size:1em;background:none;border:none;border-radius:4px;color:var(--icon-btn-fg)}
     .copyline button:hover{background:var(--icon-btn-hover-bg)}
+    .unsaved-dot{color:#e0a100;font-size:.6em;vertical-align:middle;visibility:hidden}
+    .unsaved-dot.show{visibility:visible}
   </style>
 </head>
 <body>
@@ -375,21 +377,23 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <div id="status">connecting&hellip;</div>
   </div>
   <div class="card">
-    <strong>LED blink rate</strong>
+    <strong>LED blink rate</strong> <span class="unsaved-dot" id="blink-dot" title="Unsaved change">&#x25CF;</span>
     <label>Interval (ms)</label>
     <input type="range" id="blink" min="50" max="2000" value="500"
-           oninput="dirty.blink=true;syncBlink(this.value)" onchange="scheduleSetBlink()">
+           oninput="markDirty('blink',true);syncBlink(this.value)" onchange="scheduleSetBlink()">
     <input type="number" id="blink-num" min="50" max="2000" value="500"
-           oninput="dirty.blink=true;syncBlink(this.value)" onchange="scheduleSetBlink()"
-           onfocus="this.select()" onkeydown="if(event.key==='Enter'){event.preventDefault();scheduleSetBlink();this.select();}">
+           oninput="markDirty('blink',true);syncBlink(this.value)" onchange="scheduleSetBlink()"
+           onfocus="this.select()" onkeydown="commitOnEnter(event,scheduleSetBlink)">
   </div>
   <div class="card">
-    <strong>mDNS name</strong>
+    <strong>mDNS name</strong> <span class="unsaved-dot" id="name-dot" title="Unsaved change">&#x25CF;</span>
     <label>Friendly name</label>
     <div class="copyline"><code id="fname-code">&#x2026;</code><button title="Copy" aria-label="Copy" onclick="copyText('fname-code',this)">&#x2398;</button></div>
     <label class="dim">Unique name (always works)</label>
     <div class="copyline"><code id="uname-code">&#x2026;</code><button title="Copy" aria-label="Copy" onclick="copyText('uname-code',this)">&#x2398;</button></div>
-    <input type="text" id="new-name" placeholder="helicopter" maxlength="63" onchange="setName()">
+    <input type="text" id="new-name" maxlength="63" value="helicopter"
+           oninput="markDirty('name',true)" onfocus="this.select()"
+           onchange="setName()" onkeydown="commitOnEnter(event,setName)">
   </div>
   <script>
     const THEME_KEY='hc-theme';
@@ -415,7 +419,18 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       if(!wrap.contains(e.target))wrap.classList.remove('open');
     });
     applyTheme(localStorage.getItem(THEME_KEY)||'auto');
-    const dirty={blink:false};
+    const dirty={blink:false,name:false};
+    function markDirty(field,value){
+      dirty[field]=value;
+      document.getElementById(field+'-dot').classList.toggle('show',value);
+    }
+    function commitOnEnter(event,commitFn){
+      if(event.key==='Enter'){
+        event.preventDefault();
+        commitFn();
+        event.target.select();
+      }
+    }
     async function refresh(){
       try{
         const d=await fetch('/api/status').then(r=>r.json());
@@ -463,7 +478,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       try{
         const ms=document.getElementById('blink-num').value;
         await fetch('/api/blink',{method:'POST',body:String(ms)});
-        dirty.blink=false;
+        markDirty('blink',false);
       }finally{
         blinkInFlight=false;
       }
@@ -472,7 +487,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       const n=document.getElementById('new-name').value.trim();
       if(!n)return;
       await fetch('/api/name',{method:'POST',body:n});
-      document.getElementById('new-name').value='';
+      markDirty('name',false);
       setTimeout(refresh,400);
     }
     setInterval(refresh,2000);
