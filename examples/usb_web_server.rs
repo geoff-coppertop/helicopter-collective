@@ -313,8 +313,33 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         --icon-btn-fg:#8b949e; --icon-btn-hover-bg:rgba(255,255,255,.1);
       }
     }
+    :root[data-theme="light"]{
+      --bg:#fff; --fg:#222; --card-border:#ccc; --input-border:#aaa;
+      --mono-bg:#f5f5f5; --mono-fg:#222; --dim:#777;
+      --code-bg:#f6f8fa; --code-fg:#24292f; --code-border:#d0d7de;
+      --icon-btn-fg:#57606a; --icon-btn-hover-bg:rgba(0,0,0,.08);
+    }
+    :root[data-theme="dark"]{
+      --bg:#1e1e1e; --fg:#ddd; --card-border:#444; --input-border:#555;
+      --mono-bg:#2a2a2a; --mono-fg:#ddd; --dim:#999;
+      --code-bg:#161b22; --code-fg:#c9d1d9; --code-border:#30363d;
+      --icon-btn-fg:#8b949e; --icon-btn-hover-bg:rgba(255,255,255,.1);
+    }
     body{font-family:sans-serif;max-width:520px;margin:2em auto;padding:0 1em;background:var(--bg);color:var(--fg)}
+    .titlebar{display:flex;align-items:center;justify-content:space-between}
     h1{font-size:1.4em;margin-bottom:0.2em}
+    .theme-menu-wrap{position:relative}
+    #theme-toggle{margin:0;padding:.3em;line-height:1;font-size:1.1em;background:none;border:none;border-radius:4px;color:var(--icon-btn-fg)}
+    #theme-toggle:hover{background:var(--icon-btn-hover-bg)}
+    .theme-menu{display:none;position:absolute;right:0;top:100%;padding-top:.25em;min-width:8em;
+      z-index:1}
+    .theme-menu-inner{background:var(--bg);border:1px solid var(--card-border);border-radius:6px;padding:.3em;
+      box-shadow:0 2px 8px rgba(0,0,0,.15)}
+    .theme-menu-wrap:hover .theme-menu,.theme-menu-wrap.open .theme-menu{display:block}
+    .theme-menu button{display:flex;align-items:center;gap:.5em;width:100%;margin:0;padding:.4em .5em;
+      background:none;border:none;border-radius:4px;font-size:.9em;color:var(--fg);text-align:left;cursor:pointer}
+    .theme-menu button:hover{background:var(--icon-btn-hover-bg)}
+    .theme-menu button[aria-selected="true"]{font-weight:bold}
     .card{margin:1.2em 0;padding:1em;border:1px solid var(--card-border);border-radius:8px}
     label{display:block;margin:.4em 0 .15em;font-size:.9em}
     input[type=range]{width:100%}
@@ -331,7 +356,20 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>&#x1F681; Helicopter Collective</h1>
+  <div class="titlebar">
+    <h1>&#x1F681; Helicopter Collective</h1>
+    <div class="theme-menu-wrap" id="theme-menu-wrap">
+      <button id="theme-toggle" title="Colour theme" aria-label="Colour theme" aria-haspopup="true"
+              onclick="document.getElementById('theme-menu-wrap').classList.toggle('open')">&#x1F313;</button>
+      <div class="theme-menu" id="theme-menu">
+        <div class="theme-menu-inner" role="menu">
+          <button role="menuitemradio" data-mode="auto" onclick="setTheme('auto')">&#x1F313; Auto</button>
+          <button role="menuitemradio" data-mode="light" onclick="setTheme('light')">&#x2600;&#xFE0F; Light</button>
+          <button role="menuitemradio" data-mode="dark" onclick="setTheme('dark')">&#x1F319; Dark</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="card">
     <strong>Status</strong>
     <div id="status">connecting&hellip;</div>
@@ -354,6 +392,29 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <input type="text" id="new-name" placeholder="helicopter" maxlength="63" onchange="setName()">
   </div>
   <script>
+    const THEME_KEY='hc-theme';
+    const THEME_ICONS={auto:'\u{1F313}',light:'☀️',dark:'\u{1F319}'};
+    function applyTheme(mode){
+      if(mode==='light'||mode==='dark'){
+        document.documentElement.setAttribute('data-theme',mode);
+      }else{
+        document.documentElement.removeAttribute('data-theme');
+      }
+      document.getElementById('theme-toggle').textContent=THEME_ICONS[mode];
+      document.querySelectorAll('.theme-menu button').forEach(b=>{
+        b.setAttribute('aria-selected',b.dataset.mode===mode?'true':'false');
+      });
+    }
+    function setTheme(mode){
+      localStorage.setItem(THEME_KEY,mode);
+      applyTheme(mode);
+      document.getElementById('theme-menu-wrap').classList.remove('open');
+    }
+    document.addEventListener('click',e=>{
+      const wrap=document.getElementById('theme-menu-wrap');
+      if(!wrap.contains(e.target))wrap.classList.remove('open');
+    });
+    applyTheme(localStorage.getItem(THEME_KEY)||'auto');
     const dirty={blink:false};
     async function refresh(){
       try{
