@@ -14,6 +14,13 @@
 - Once a branch's PR has been merged, treat any follow-up work as fresh:
   restart the branch from the latest default branch rather than stacking
   new commits on merged history.
+- Split commits by logical subtopic, not by when the user happened to ask
+  for them. If a single request (or a single conversation turn) covers
+  several genuinely separable concerns, they still get their own commits —
+  check whether each piece is independently buildable/testable on its own
+  and, if so, commit it that way. Conversely, don't split a single
+  indivisible change into multiple commits just because it was described
+  in separate sentences.
 
 ## Tests
 
