@@ -172,6 +172,11 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
                     &friendly_enc[..friendly_len],
                     &unique_enc[..unique_len],
                 ) {
+                    // RFC 6762 §6.3: jitter the response slightly so many
+                    // responders answering the same multicast query don't
+                    // collide.
+                    let seed = Instant::now().as_micros() as u32 ^ u32::from(pkt[0]);
+                    Timer::after(Duration::from_millis(jitter_delay_ms(seed) as u64)).await;
                     socket
                         .send_to(&resp[..resp_len], IpEndpoint::new(mcast, 5353))
                         .await
@@ -209,7 +214,9 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
     }
 }
 
-use helicopter_collective::mdns::{build_mdns_announcement, encode_mdns_name, handle_mdns_query};
+use helicopter_collective::mdns::{
+    build_mdns_announcement, encode_mdns_name, handle_mdns_query, jitter_delay_ms,
+};
 
 // ── HTTP ───────────────────────────────────────────────────────────────────────
 

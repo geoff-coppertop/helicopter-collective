@@ -134,6 +134,14 @@ pub fn build_mdns_announcement(resp: &mut [u8], name_enc: &[u8], device_ip: [u8;
     build_a_record_answer(resp, 0, name_enc, device_ip, ttl)
 }
 
+/// Maps an arbitrary seed to a delay in milliseconds within RFC 6762 §6.3's
+/// recommended 20-120ms jitter window, so that when several responders would
+/// otherwise answer the same multicast query at once, their replies spread
+/// out instead of colliding.
+pub fn jitter_delay_ms(seed: u32) -> u32 {
+    20 + (seed % 101)
+}
+
 /// Case-insensitive comparison of the leading bytes of `query` with `encoded`.
 pub fn names_equal_prefix(query: &[u8], encoded: &[u8]) -> bool {
     query.len() >= encoded.len()
@@ -444,5 +452,27 @@ mod tests {
         let ip_offset = 12 + fe.len() + 10;
         assert_eq!(&resp[ip_offset..ip_offset + 4], &DEVICE_IP);
         assert_eq!(n, ip_offset + 4);
+    }
+
+    // ── jitter_delay_ms ───────────────────────────────────────────────────────
+
+    #[test]
+    fn jitter_stays_within_rfc_recommended_window() {
+        for seed in [0u32, 1, 50, 100, 101, 1000, u32::MAX] {
+            let ms = jitter_delay_ms(seed);
+            assert!((20..=120).contains(&ms), "seed {seed} produced {ms}ms");
+        }
+    }
+
+    #[test]
+    fn jitter_is_deterministic_for_a_given_seed() {
+        assert_eq!(jitter_delay_ms(42), jitter_delay_ms(42));
+    }
+
+    #[test]
+    fn jitter_varies_across_seeds() {
+        // Not a strict requirement of any single seed, but the whole point of
+        // jitter is that different queries get different delays.
+        assert_ne!(jitter_delay_ms(0), jitter_delay_ms(50));
     }
 }
