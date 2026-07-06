@@ -308,6 +308,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     button{margin-top:.6em;padding:.4em 1em;cursor:pointer}
     #status{font-family:monospace;background:#f5f5f5;padding:.5em .7em;border-radius:4px;font-size:.9em}
     .dim{color:#777;font-size:.85em}
+    .copyline{display:flex;align-items:center;gap:.5em;margin:.2em 0 .6em}
+    .copyline code{font-family:monospace;background:#f5f5f5;padding:.3em .5em;border-radius:4px;user-select:all}
+    .copyline button{margin:0;padding:.2em .6em;font-size:1.1em;line-height:1}
   </style>
 </head>
 <body>
@@ -325,8 +328,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   </div>
   <div class="card">
     <strong>mDNS name</strong>
-    <label>Friendly name: <em id="fname">&#x2026;</em>.local</label>
-    <label class="dim">Unique name: <em id="uname">&#x2026;</em>.local (always works)</label>
+    <label>Friendly name</label>
+    <div class="copyline"><code id="fname-code">&#x2026;</code><button title="Copy" aria-label="Copy" onclick="copyText('fname-code',this)">&#x2398;</button></div>
+    <label class="dim">Unique name (always works)</label>
+    <div class="copyline"><code id="uname-code">&#x2026;</code><button title="Copy" aria-label="Copy" onclick="copyText('uname-code',this)">&#x2398;</button></div>
     <input type="text" id="new-name" placeholder="helicopter" maxlength="63" onchange="setName()">
   </div>
   <script>
@@ -339,11 +344,28 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
           document.getElementById('blink-val').textContent=d.blink_ms;
           document.getElementById('blink').value=d.blink_ms;
         }
-        document.getElementById('fname').textContent=d.friendly_name;
-        document.getElementById('uname').textContent=d.unique_name;
+        document.getElementById('fname-code').textContent=d.friendly_name+'.local';
+        document.getElementById('uname-code').textContent=d.unique_name+'.local';
       }catch(e){
         document.getElementById('status').textContent='offline';
       }
+    }
+    async function copyText(id,btn){
+      const text=document.getElementById(id).textContent;
+      try{
+        await navigator.clipboard.writeText(text);
+      }catch(e){
+        const range=document.createRange();
+        range.selectNodeContents(document.getElementById(id));
+        const sel=window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+      }
+      const orig=btn.textContent;
+      btn.textContent='✓';
+      setTimeout(()=>{btn.textContent=orig;},1200);
     }
     async function setBlink(){
       await fetch('/api/blink',{method:'POST',body:String(document.getElementById('blink').value)});
