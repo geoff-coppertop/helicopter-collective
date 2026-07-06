@@ -35,7 +35,7 @@ use embassy_rp::usb::{Driver as UsbDriver, InterruptHandler as UsbIrq};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embassy_usb::class::cdc_ncm::embassy_net::{
     Device as NcmDevice, Runner as NcmRunner, State as NcmNetState,
 };
@@ -114,10 +114,71 @@ async fn dhcp_task(stack: Stack<'static>) -> ! {
         .await
 }
 
-/// Signalled with the previous friendly name whenever it changes, so
-/// `mdns_task` can send a goodbye for the old name and announce the new one
-/// immediately instead of waiting for listeners' caches to expire (TTL=120s).
-static NAME_CHANGED: Signal<CriticalSectionRawMutex, HString<64>> = Signal::new();
+/// Signalled with a caller-requested friendly name whenever the user asks to
+/// rename the device, so `mdns_task` — the sole owner of `FRIENDLY_NAME` and
+/// the mDNS socket — can probe it for conflicts, commit it, and announce the
+/// change, instead of the HTTP handler committing an unprobed name directly.
+static NAME_REQUEST: Signal<CriticalSectionRawMutex, HString<64>> = Signal::new();
+
+const MAX_PROBE_ATTEMPTS: u8 = 4;
+const PROBE_WINDOW_MS: u64 = 750;
+
+/// Probes for `base_name` and, on conflict with another responder, tries
+/// `base_name-2`, `base_name-3`, ... up to [`MAX_PROBE_ATTEMPTS`] (RFC 6762
+/// §8.1 probing, §9 conflict resolution). Returns the first name found
+/// unclaimed, or the last-tried candidate if every attempt conflicts.
+async fn resolve_name_conflict(
+    socket: &mut embassy_net::udp::UdpSocket<'_>,
+    pkt: &mut [u8],
+    resp: &mut [u8],
+    mcast: IpAddress,
+    device_ip: [u8; 4],
+    base_name: &str,
+) -> HString<64> {
+    let mut candidate = HString::<64>::new();
+    candidate.push_str(base_name).ok();
+
+    for attempt in 0..MAX_PROBE_ATTEMPTS {
+        let mut name_enc = [0u8; 80];
+        let name_len = encode_mdns_name(&mut name_enc, candidate.as_str(), "local");
+
+        let query_len = build_mdns_query(resp, &name_enc[..name_len], 255 /* ANY */);
+        socket
+            .send_to(&resp[..query_len], IpEndpoint::new(mcast, 5353))
+            .await
+            .ok();
+
+        let deadline = Instant::now() + Duration::from_millis(PROBE_WINDOW_MS);
+        let mut conflict = false;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match with_timeout(deadline - now, socket.recv_from(pkt)).await {
+                Ok(Ok((n, _src))) => {
+                    if let Some(claimed_ip) = parse_response_claim(&pkt[..n], &name_enc[..name_len])
+                    {
+                        if claimed_ip != device_ip {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        if !conflict {
+            return candidate;
+        }
+
+        candidate.clear();
+        write!(&mut candidate, "{}-{}", base_name, attempt + 2).ok();
+    }
+
+    candidate
+}
 
 #[embassy_executor::task]
 async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
@@ -156,16 +217,29 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
     let mut unique_enc = [0u8; 80];
     let unique_len = encode_mdns_name(&mut unique_enc, unique_name.as_str(), "local");
 
-    // Announce both names twice, ~1s apart, per RFC 6762 §8.3, so listeners
-    // that already had a (now-stale) cache entry for this device pick up
-    // its records right away instead of only ever hearing from us when
-    // queried.
+    // Probe for the boot-time friendly name before claiming it, resolving
+    // any conflict with another device that already holds it (RFC 6762
+    // §8.1/§9), then announce twice ~1s apart (§8.3) so listeners that were
+    // already caching a now-stale answer for this name pick up the change.
+    let boot_name = { FRIENDLY_NAME.lock().await.clone() };
+    let resolved_boot_name = resolve_name_conflict(
+        &mut socket,
+        &mut pkt,
+        &mut resp,
+        mcast,
+        DEVICE_IP,
+        boot_name.as_str(),
+    )
+    .await;
+    {
+        let mut name = FRIENDLY_NAME.lock().await;
+        name.clear();
+        name.push_str(resolved_boot_name.as_str()).ok();
+    }
     for _ in 0..2 {
         let mut friendly_enc = [0u8; 80];
-        let friendly_len = {
-            let name = FRIENDLY_NAME.lock().await;
-            encode_mdns_name(&mut friendly_enc, name.as_str(), "local")
-        };
+        let friendly_len =
+            encode_mdns_name(&mut friendly_enc, resolved_boot_name.as_str(), "local");
         let announce_len =
             build_mdns_announcement(&mut resp, &friendly_enc[..friendly_len], DEVICE_IP, 120);
         socket
@@ -182,7 +256,7 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
     }
 
     loop {
-        match select(socket.recv_from(&mut pkt), NAME_CHANGED.wait()).await {
+        match select(socket.recv_from(&mut pkt), NAME_REQUEST.wait()).await {
             Either::First(Ok((n, _src))) => {
                 let mut friendly_enc = [0u8; 80];
                 let friendly_len = {
@@ -209,7 +283,23 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
                 }
             }
             Either::First(Err(_)) => {}
-            Either::Second(old_name) => {
+            Either::Second(requested_name) => {
+                let old_name = { FRIENDLY_NAME.lock().await.clone() };
+                let resolved = resolve_name_conflict(
+                    &mut socket,
+                    &mut pkt,
+                    &mut resp,
+                    mcast,
+                    DEVICE_IP,
+                    requested_name.as_str(),
+                )
+                .await;
+                {
+                    let mut name = FRIENDLY_NAME.lock().await;
+                    name.clear();
+                    name.push_str(resolved.as_str()).ok();
+                }
+
                 let mut old_enc = [0u8; 80];
                 let old_len = encode_mdns_name(&mut old_enc, old_name.as_str(), "local");
                 let goodbye_len =
@@ -220,10 +310,7 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
                     .ok();
 
                 let mut friendly_enc = [0u8; 80];
-                let friendly_len = {
-                    let name = FRIENDLY_NAME.lock().await;
-                    encode_mdns_name(&mut friendly_enc, name.as_str(), "local")
-                };
+                let friendly_len = encode_mdns_name(&mut friendly_enc, resolved.as_str(), "local");
                 let announce_len = build_mdns_announcement(
                     &mut resp,
                     &friendly_enc[..friendly_len],
@@ -240,7 +327,8 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
 }
 
 use helicopter_collective::mdns::{
-    build_mdns_announcement, encode_mdns_name, handle_mdns_query, jitter_delay_ms,
+    build_mdns_announcement, build_mdns_query, encode_mdns_name, handle_mdns_query,
+    jitter_delay_ms, parse_response_claim,
 };
 
 // ── HTTP ───────────────────────────────────────────────────────────────────────
@@ -311,12 +399,9 @@ impl picoserve::routing::RequestHandlerService for SetNameHandler {
             });
         if let Some(name) = trimmed {
             if !name.is_empty() {
-                let mut n = FRIENDLY_NAME.lock().await;
-                if n.as_str() != name.as_str() {
-                    let old = n.clone();
-                    n.clear();
-                    n.push_str(name.as_str()).ok();
-                    NAME_CHANGED.signal(old);
+                let current = FRIENDLY_NAME.lock().await;
+                if current.as_str() != name.as_str() {
+                    NAME_REQUEST.signal(name);
                 }
             }
         }
