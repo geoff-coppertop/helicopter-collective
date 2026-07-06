@@ -22,6 +22,16 @@
   indivisible change into multiple commits just because it was described
   in separate sentences.
 
+## Pull requests
+
+- Keep the PR description up to date with the branch: when new commits land,
+  update the summary and commit list so the description matches what's
+  actually in the branch, not just what was there when the PR was opened.
+- Always include a test plan written as literal markdown checkboxes
+  (`- [ ] ...`), covering both automated checks (build, unit tests) and
+  manual verification steps for anything not covered by tests. Update the
+  checklist as functionality is added, not just when the PR is first created.
+
 ## Tests
 
 - Add tests in the same commit as the code they exercise, not as a
