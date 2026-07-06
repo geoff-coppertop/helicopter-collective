@@ -299,19 +299,35 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Helicopter Collective</title>
   <style>
-    body{font-family:sans-serif;max-width:520px;margin:2em auto;padding:0 1em;color:#222}
+    :root{
+      --bg:#fff; --fg:#222; --card-border:#ccc; --input-border:#aaa;
+      --mono-bg:#f5f5f5; --mono-fg:#222; --dim:#777;
+      --code-bg:#f6f8fa; --code-fg:#24292f; --code-border:#d0d7de;
+      --icon-btn-fg:#57606a; --icon-btn-hover-bg:rgba(0,0,0,.08);
+    }
+    @media (prefers-color-scheme:dark){
+      :root{
+        --bg:#1e1e1e; --fg:#ddd; --card-border:#444; --input-border:#555;
+        --mono-bg:#2a2a2a; --mono-fg:#ddd; --dim:#999;
+        --code-bg:#161b22; --code-fg:#c9d1d9; --code-border:#30363d;
+        --icon-btn-fg:#8b949e; --icon-btn-hover-bg:rgba(255,255,255,.1);
+      }
+    }
+    body{font-family:sans-serif;max-width:520px;margin:2em auto;padding:0 1em;background:var(--bg);color:var(--fg)}
     h1{font-size:1.4em;margin-bottom:0.2em}
-    .card{margin:1.2em 0;padding:1em;border:1px solid #ccc;border-radius:8px}
+    .card{margin:1.2em 0;padding:1em;border:1px solid var(--card-border);border-radius:8px}
     label{display:block;margin:.4em 0 .15em;font-size:.9em}
     input[type=range]{width:100%}
-    input[type=text],input[type=number]{width:100%;box-sizing:border-box;padding:.35em;border:1px solid #aaa;border-radius:4px}
+    input[type=text],input[type=number]{width:100%;box-sizing:border-box;padding:.35em;border:1px solid var(--input-border);border-radius:4px;background:var(--bg);color:var(--fg)}
     input[type=number]{margin-top:.4em}
     button{margin-top:.6em;padding:.4em 1em;cursor:pointer}
-    #status{font-family:monospace;background:#f5f5f5;padding:.5em .7em;border-radius:4px;font-size:.9em}
-    .dim{color:#777;font-size:.85em}
-    .copyline{display:flex;align-items:center;gap:.5em;margin:.2em 0 .6em}
-    .copyline code{font-family:monospace;background:#f5f5f5;padding:.3em .5em;border-radius:4px;user-select:all}
-    .copyline button{margin:0;padding:.2em .6em;font-size:1.1em;line-height:1}
+    #status{font-family:monospace;background:var(--mono-bg);color:var(--mono-fg);padding:.5em .7em;border-radius:4px;font-size:.9em}
+    .dim{color:var(--dim);font-size:.85em}
+    .copyline{display:flex;align-items:center;justify-content:space-between;gap:.5em;margin:.2em 0 .6em;
+      background:var(--code-bg);border:1px solid var(--code-border);border-radius:6px;padding:.5em .5em .5em .75em}
+    .copyline code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--code-fg);background:none;padding:0;user-select:all}
+    .copyline button{margin:0;padding:.3em;line-height:1;font-size:1em;background:none;border:none;border-radius:4px;color:var(--icon-btn-fg)}
+    .copyline button:hover{background:var(--icon-btn-hover-bg)}
   </style>
 </head>
 <body>
