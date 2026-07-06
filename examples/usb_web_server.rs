@@ -156,6 +156,31 @@ async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
     let mut unique_enc = [0u8; 80];
     let unique_len = encode_mdns_name(&mut unique_enc, unique_name.as_str(), "local");
 
+    // Announce both names twice, ~1s apart, per RFC 6762 §8.3, so listeners
+    // that already had a (now-stale) cache entry for this device pick up
+    // its records right away instead of only ever hearing from us when
+    // queried.
+    for _ in 0..2 {
+        let mut friendly_enc = [0u8; 80];
+        let friendly_len = {
+            let name = FRIENDLY_NAME.lock().await;
+            encode_mdns_name(&mut friendly_enc, name.as_str(), "local")
+        };
+        let announce_len =
+            build_mdns_announcement(&mut resp, &friendly_enc[..friendly_len], DEVICE_IP, 120);
+        socket
+            .send_to(&resp[..announce_len], IpEndpoint::new(mcast, 5353))
+            .await
+            .ok();
+        let announce_len =
+            build_mdns_announcement(&mut resp, &unique_enc[..unique_len], DEVICE_IP, 120);
+        socket
+            .send_to(&resp[..announce_len], IpEndpoint::new(mcast, 5353))
+            .await
+            .ok();
+        Timer::after(Duration::from_secs(1)).await;
+    }
+
     loop {
         match select(socket.recv_from(&mut pkt), NAME_CHANGED.wait()).await {
             Either::First(Ok((n, _src))) => {
