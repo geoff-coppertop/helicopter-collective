@@ -304,7 +304,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     .card{margin:1.2em 0;padding:1em;border:1px solid #ccc;border-radius:8px}
     label{display:block;margin:.4em 0 .15em;font-size:.9em}
     input[type=range]{width:100%}
-    input[type=text]{width:100%;box-sizing:border-box;padding:.35em;border:1px solid #aaa;border-radius:4px}
+    input[type=text],input[type=number]{width:100%;box-sizing:border-box;padding:.35em;border:1px solid #aaa;border-radius:4px}
+    input[type=number]{margin-top:.4em}
     button{margin-top:.6em;padding:.4em 1em;cursor:pointer}
     #status{font-family:monospace;background:#f5f5f5;padding:.5em .7em;border-radius:4px;font-size:.9em}
     .dim{color:#777;font-size:.85em}
@@ -321,9 +322,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   </div>
   <div class="card">
     <strong>LED blink rate</strong>
-    <label>Interval: <span id="blink-val">500</span>&thinsp;ms</label>
+    <label>Interval (ms)</label>
     <input type="range" id="blink" min="50" max="2000" value="500"
-           oninput="dirty.blink=true;document.getElementById('blink-val').textContent=this.value">
+           oninput="dirty.blink=true;syncBlink(this.value)">
+    <input type="number" id="blink-num" min="50" max="2000" value="500"
+           oninput="dirty.blink=true;syncBlink(this.value)">
     <button onclick="setBlink()">Apply</button>
   </div>
   <div class="card">
@@ -341,8 +344,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         const d=await fetch('/api/status').then(r=>r.json());
         document.getElementById('status').textContent='Uptime: '+d.uptime_secs+'s';
         if(!dirty.blink){
-          document.getElementById('blink-val').textContent=d.blink_ms;
           document.getElementById('blink').value=d.blink_ms;
+          document.getElementById('blink-num').value=d.blink_ms;
         }
         document.getElementById('fname-code').textContent=d.friendly_name+'.local';
         document.getElementById('uname-code').textContent=d.unique_name+'.local';
@@ -367,8 +370,13 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       btn.textContent='✓';
       setTimeout(()=>{btn.textContent=orig;},1200);
     }
+    function syncBlink(value){
+      document.getElementById('blink').value=value;
+      document.getElementById('blink-num').value=value;
+    }
     async function setBlink(){
-      await fetch('/api/blink',{method:'POST',body:String(document.getElementById('blink').value)});
+      const ms=document.getElementById('blink-num').value;
+      await fetch('/api/blink',{method:'POST',body:String(ms)});
       dirty.blink=false;
     }
     async function setName(){
