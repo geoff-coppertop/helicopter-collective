@@ -64,20 +64,26 @@ impl EngineeringUnits {
 /// Per-axis EMA smoothing factors, independently tunable since each is a
 /// physically distinct signal with its own responsiveness needs.
 ///
-/// X/Y/Z are the live "3D mouse" input signal, so responsiveness matters: at
-/// the 500 ms sample rate used here, a hardware trace showed a magnet swipe
-/// taking ~40 samples (~20 s) to settle at alpha=0.2 (time constant ≈ 2.2 s)
-/// — most of that is filter lag, not the magnet actually moving that slowly.
-/// 0.4 roughly halves the time constant (≈ 1.0 s) while still knocking down
-/// single-sample spikes.
+/// X/Y/Z are the live "3D mouse" input signal, so responsiveness matters.
+/// Two hardware traces so far:
+///   - alpha=0.2: a magnet swipe took ~40 samples (~20 s, time constant
+///     ≈ 2.2 s) to settle — mostly filter lag, not physical motion.
+///   - alpha=0.4: settling after the last disturbance dropped to ~10
+///     samples (~5 s, time constant ≈ 1.0 s) — better, but still sluggish
+///     for live tracking. Baseline noise stayed under ~0.15 mT with room
+///     to spare.
+/// 0.6 (time constant ≈ 0.55 s) trades further noise margin for lag;
+/// re-capture a trace after this change to confirm it's still acceptable
+/// — a fixed-alpha EMA can't buy responsiveness without giving up some
+/// jitter rejection, since one alpha controls both.
 ///
 /// Temperature has no low-latency requirement — nothing reads it for
 /// control — and real temperature changes (e.g. touching the sensor) are
 /// already slow relative to the sample rate, so it can trade responsiveness
 /// for cleaner readings independently of the magnetic axes' tuning.
-const X_FILTER_ALPHA: f32 = 0.4;
-const Y_FILTER_ALPHA: f32 = 0.4;
-const Z_FILTER_ALPHA: f32 = 0.4;
+const X_FILTER_ALPHA: f32 = 0.6;
+const Y_FILTER_ALPHA: f32 = 0.6;
+const Z_FILTER_ALPHA: f32 = 0.6;
 const TEMP_FILTER_ALPHA: f32 = 0.1;
 
 /// Applies an independent [`Ema`] instance to each field of
