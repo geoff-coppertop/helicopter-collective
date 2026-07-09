@@ -46,22 +46,26 @@ const SAMPLE_PERIOD_S: f32 = 0.5;
 /// than any fixed alpha tried so far. It also showed raw temperature noise
 /// swinging ±1-2°C sample-to-sample at rest — confirming TEMP_FILTER_ALPHA
 /// below is doing real work — and that resting X/Y/Z jitter wasn't much
-/// quieter filtered than raw, despite MAG_MINCUTOFF_HZ being fairly low.
+/// quieter filtered than raw, which pointed at MAG_DCUTOFF_HZ (see below).
+///
+/// A follow-up trace at MAG_DCUTOFF_HZ=0.5 confirmed the fix: over the same
+/// kind of idle stretch, filtered X/Y/Z spread dropped to roughly 1/2 to 1/3
+/// of raw (was barely narrower than raw before), while swipe tracking held
+/// up — one step tracked 99% of a -19.1 to -39.9 mT jump, comparable to or
+/// better than the pre-change trace. Both goals achieved simultaneously,
+/// which is the whole point of a speed-adaptive filter over a fixed alpha.
 ///
 /// - MAG_MINCUTOFF_HZ ≈ 0.15 Hz: resting smoothing roughly as heavy as our
 ///   gentlest fixed-alpha trial (alpha=0.2 ⇒ ≈0.08 Hz cutoff at this sample
 ///   rate), with a bit less margin since fast motion no longer has to fight
 ///   through the same cutoff to get through. Not yet contradicted by data.
-/// - MAG_BETA ≈ 0.1: validated by the swipe tracking above; not adjusted.
-/// - MAG_DCUTOFF_HZ: was 1.0 (the paper's usual default). At this 500 ms
-///   sample rate that's alpha≈0.76 on the derivative estimate — fast enough
-///   that a single noisy raw-to-raw jump (not real motion) can transiently
-///   raise the position cutoff, which is the likely cause of the
-///   weaker-than-expected resting smoothing observed above. Lowered to 0.5
-///   (alpha≈0.61) to damp the derivative estimate itself more before it
-///   drives the adaptive cutoff. Still a starting point — needs a follow-up
-///   raw+filtered trace to confirm it actually quiets resting jitter
-///   without dulling the swipe response validated above.
+/// - MAG_BETA ≈ 0.1: validated by the swipe tracking in both traces above;
+///   not adjusted.
+/// - MAG_DCUTOFF_HZ = 0.5 (alpha≈0.61 on the derivative estimate at this
+///   500 ms sample rate): lowered from the paper's usual default of 1.0
+///   (alpha≈0.76), which let single noisy raw-to-raw jumps — not real
+///   motion — transiently open the position cutoff. Validated by the
+///   follow-up trace above; no further change indicated right now.
 const MAG_MINCUTOFF_HZ: f32 = 0.15;
 const MAG_BETA: f32 = 0.1;
 const MAG_DCUTOFF_HZ: f32 = 0.5;
