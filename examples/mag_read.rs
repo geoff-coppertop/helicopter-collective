@@ -2,7 +2,10 @@
 //!
 //! The sensor is connected to I2C0: SDA on PIN_20, SCL on PIN_21.
 //! Measurements are logged every 500 ms via RTT using defmt, converted from
-//! raw ADC counts into engineering units (mT, °C).
+//! raw ADC counts into engineering units (mT, °C). Each line logs both the
+//! raw (pre-filter) and filtered values, one line of column names printed
+//! once up front, so a captured trace carries enough to tune the filter
+//! without having to reverse-engineer raw noise from filtered output.
 
 #![no_std]
 #![no_main]
@@ -15,7 +18,7 @@ use embassy_rp::i2c::{self, Config, InterruptHandler};
 use embassy_rp::peripherals::I2C0;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c as I2C_HAL;
-use helicopter_collective::filter::{Ema, round_to};
+use helicopter_collective::filter::{Ema, OneEuroFilter, round_to};
 use tmag5273::TMag5273;
 use tmag5273::types::{DeviceVersion, MagData, TMag5273Error};
 use {defmt_rtt as _, panic_probe as _};
@@ -61,47 +64,57 @@ impl EngineeringUnits {
     }
 }
 
-/// Per-axis EMA smoothing factors, independently tunable since each is a
-/// physically distinct signal with its own responsiveness needs.
+/// Must match the actual sample interval in the loop below (500 ms).
+const SAMPLE_PERIOD_S: f32 = 0.5;
+
+/// One Euro Filter parameters for the magnetic axes — see [`OneEuroFilter`]
+/// and Casiez, Roussel & Vogel, "1€ Filter: A Simple Speed-based Low-pass
+/// Filter for Noisy Input in Interactive Systems" (CHI 2012). Two rounds of
+/// fixed-alpha Ema tuning (0.2 → 0.4 → 0.6) kept running into the same
+/// limit: one alpha trades resting jitter against motion lag, and there's
+/// no setting that's both quiet at rest and responsive during a swipe. This
+/// filter adapts its cutoff to the signal's estimated speed instead of
+/// fixing one tradeoff for all speeds.
 ///
-/// X/Y/Z are the live "3D mouse" input signal, so responsiveness matters.
-/// Two hardware traces so far:
-///   - alpha=0.2: a magnet swipe took ~40 samples (~20 s, time constant
-///     ≈ 2.2 s) to settle — mostly filter lag, not physical motion.
-///   - alpha=0.4: settling after the last disturbance dropped to ~10
-///     samples (~5 s, time constant ≈ 1.0 s) — better, but still sluggish
-///     for live tracking. Baseline noise stayed under ~0.15 mT with room
-///     to spare.
-/// 0.6 (time constant ≈ 0.55 s) trades further noise margin for lag;
-/// re-capture a trace after this change to confirm it's still acceptable
-/// — a fixed-alpha EMA can't buy responsiveness without giving up some
-/// jitter rejection, since one alpha controls both.
-///
-/// Temperature has no low-latency requirement — nothing reads it for
-/// control — and real temperature changes (e.g. touching the sensor) are
-/// already slow relative to the sample rate, so it can trade responsiveness
-/// for cleaner readings independently of the magnetic axes' tuning.
-const X_FILTER_ALPHA: f32 = 0.6;
-const Y_FILTER_ALPHA: f32 = 0.6;
-const Z_FILTER_ALPHA: f32 = 0.6;
+/// Starting points, not yet hardware-validated — see the raw/filtered log
+/// output below for the data to validate them against:
+/// - MAG_MINCUTOFF_HZ ≈ 0.15 Hz: resting smoothing roughly as heavy as our
+///   gentlest fixed-alpha trial (alpha=0.2 ⇒ ≈0.08 Hz cutoff at this sample
+///   rate), with a bit less margin since fast motion no longer has to fight
+///   through the same cutoff to get through.
+/// - MAG_BETA ≈ 0.1: derived from swipe-event derivatives of roughly
+///   5–15 mT/s seen in *filtered* traces so far — true raw-signal
+///   derivatives are almost certainly larger, hence logging raw alongside
+///   filtered now. Pushes the cutoff toward ~1–2 Hz during a real swipe.
+/// - MAG_DCUTOFF_HZ = 1.0: the paper's standard default for smoothing the
+///   speed estimate itself; rarely needs tuning.
+const MAG_MINCUTOFF_HZ: f32 = 0.15;
+const MAG_BETA: f32 = 0.1;
+const MAG_DCUTOFF_HZ: f32 = 1.0;
+
+/// Temperature keeps a fixed-alpha [`Ema`]: nothing reads temperature for
+/// low-latency control, so there's no reason to let it speed up during fast
+/// changes the way the magnetic axes need to.
 const TEMP_FILTER_ALPHA: f32 = 0.1;
 
-/// Applies an independent [`Ema`] instance to each field of
-/// [`EngineeringUnits`]: same filter, reused per axis, each with its own
-/// tunable alpha.
+/// Filters each field of [`EngineeringUnits`] independently: [`OneEuroFilter`]
+/// for the magnetic axes (need to track fast motion without resting jitter),
+/// a fixed-alpha [`Ema`] for temperature (no responsiveness requirement).
 struct EngineeringUnitsFilter {
-    x: Ema,
-    y: Ema,
-    z: Ema,
+    x: OneEuroFilter,
+    y: OneEuroFilter,
+    z: OneEuroFilter,
     temperature: Ema,
 }
 
 impl EngineeringUnitsFilter {
-    const fn new() -> Self {
+    fn new() -> Self {
+        let mag_filter =
+            || OneEuroFilter::new(MAG_MINCUTOFF_HZ, MAG_BETA, MAG_DCUTOFF_HZ, SAMPLE_PERIOD_S);
         Self {
-            x: Ema::new(X_FILTER_ALPHA),
-            y: Ema::new(Y_FILTER_ALPHA),
-            z: Ema::new(Z_FILTER_ALPHA),
+            x: mag_filter(),
+            y: mag_filter(),
+            z: mag_filter(),
             temperature: Ema::new(TEMP_FILTER_ALPHA),
         }
     }
@@ -137,15 +150,22 @@ async fn main(_spawner: Spawner) {
 
     let mut filter = EngineeringUnitsFilter::new();
 
+    info!("raw_x raw_y raw_z raw_t | filt_x filt_y filt_z filt_t (mT mT mT C)");
+
     loop {
         let data = mag_sensor.get_all_data().await.unwrap();
-        let units = filter.update(&EngineeringUnits::from_raw(&data));
+        let raw = EngineeringUnits::from_raw(&data);
+        let filtered = filter.update(&raw);
         info!(
-            "x: {} mT, y: {} mT, z: {} mT, temp: {} C",
-            round_to(units.x_mt, 1000.0),
-            round_to(units.y_mt, 1000.0),
-            round_to(units.z_mt, 1000.0),
-            round_to(units.temperature_c, 10.0)
+            "{} {} {} {} | {} {} {} {}",
+            round_to(raw.x_mt, 1000.0),
+            round_to(raw.y_mt, 1000.0),
+            round_to(raw.z_mt, 1000.0),
+            round_to(raw.temperature_c, 10.0),
+            round_to(filtered.x_mt, 1000.0),
+            round_to(filtered.y_mt, 1000.0),
+            round_to(filtered.z_mt, 1000.0),
+            round_to(filtered.temperature_c, 10.0),
         );
 
         Timer::after(Duration::from_millis(500)).await;
