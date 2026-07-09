@@ -15,6 +15,7 @@ use embassy_rp::i2c::{self, Config, InterruptHandler};
 use embassy_rp::peripherals::I2C0;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c as I2C_HAL;
+use helicopter_collective::filter::Ema;
 use tmag5273::TMag5273;
 use tmag5273::types::{DeviceVersion, MagData, TMag5273Error};
 use {defmt_rtt as _, panic_probe as _};
@@ -60,6 +61,41 @@ impl EngineeringUnits {
     }
 }
 
+/// Smoothing factor for the per-axis EMA filters below. Lower values reject
+/// more Hall-sensor noise at the cost of more lag; tune against the sensor's
+/// actual noise floor and the sample rate (500 ms in this example).
+const FILTER_ALPHA: f32 = 0.2;
+
+/// Applies an independent exponential moving average to each field of
+/// [`EngineeringUnits`], since each axis (and temperature) is a physically
+/// distinct signal.
+struct EngineeringUnitsFilter {
+    x: Ema,
+    y: Ema,
+    z: Ema,
+    temperature: Ema,
+}
+
+impl EngineeringUnitsFilter {
+    const fn new(alpha: f32) -> Self {
+        Self {
+            x: Ema::new(alpha),
+            y: Ema::new(alpha),
+            z: Ema::new(alpha),
+            temperature: Ema::new(alpha),
+        }
+    }
+
+    fn update(&mut self, sample: &EngineeringUnits) -> EngineeringUnits {
+        EngineeringUnits {
+            x_mt: self.x.update(sample.x_mt),
+            y_mt: self.y.update(sample.y_mt),
+            z_mt: self.z.update(sample.z_mt),
+            temperature_c: self.temperature.update(sample.temperature_c),
+        }
+    }
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -79,9 +115,11 @@ async fn main(_spawner: Spawner) {
 
     print_device_stats(&mut mag_sensor).await.unwrap();
 
+    let mut filter = EngineeringUnitsFilter::new(FILTER_ALPHA);
+
     loop {
         let data = mag_sensor.get_all_data().await.unwrap();
-        let units = EngineeringUnits::from_raw(&data);
+        let units = filter.update(&EngineeringUnits::from_raw(&data));
         info!(
             "x: {} mT, y: {} mT, z: {} mT, temp: {} C",
             units.x_mt, units.y_mt, units.z_mt, units.temperature_c
