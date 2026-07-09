@@ -76,21 +76,31 @@ const SAMPLE_PERIOD_S: f32 = 0.5;
 /// filter adapts its cutoff to the signal's estimated speed instead of
 /// fixing one tradeoff for all speeds.
 ///
-/// Starting points, not yet hardware-validated — see the raw/filtered log
-/// output below for the data to validate them against:
+/// A first raw+filtered hardware trace validated the core behavior: during
+/// a real swipe (one step's raw derivative reached ~75 mT/s) the filter
+/// tracked 73-91% of each jump on the very next sample, far more responsive
+/// than any fixed alpha tried so far. It also showed raw temperature noise
+/// swinging ±1-2°C sample-to-sample at rest — confirming TEMP_FILTER_ALPHA
+/// below is doing real work — and that resting X/Y/Z jitter wasn't much
+/// quieter filtered than raw, despite MAG_MINCUTOFF_HZ being fairly low.
+///
 /// - MAG_MINCUTOFF_HZ ≈ 0.15 Hz: resting smoothing roughly as heavy as our
 ///   gentlest fixed-alpha trial (alpha=0.2 ⇒ ≈0.08 Hz cutoff at this sample
 ///   rate), with a bit less margin since fast motion no longer has to fight
-///   through the same cutoff to get through.
-/// - MAG_BETA ≈ 0.1: derived from swipe-event derivatives of roughly
-///   5–15 mT/s seen in *filtered* traces so far — true raw-signal
-///   derivatives are almost certainly larger, hence logging raw alongside
-///   filtered now. Pushes the cutoff toward ~1–2 Hz during a real swipe.
-/// - MAG_DCUTOFF_HZ = 1.0: the paper's standard default for smoothing the
-///   speed estimate itself; rarely needs tuning.
+///   through the same cutoff to get through. Not yet contradicted by data.
+/// - MAG_BETA ≈ 0.1: validated by the swipe tracking above; not adjusted.
+/// - MAG_DCUTOFF_HZ: was 1.0 (the paper's usual default). At this 500 ms
+///   sample rate that's alpha≈0.76 on the derivative estimate — fast enough
+///   that a single noisy raw-to-raw jump (not real motion) can transiently
+///   raise the position cutoff, which is the likely cause of the
+///   weaker-than-expected resting smoothing observed above. Lowered to 0.5
+///   (alpha≈0.61) to damp the derivative estimate itself more before it
+///   drives the adaptive cutoff. Still a starting point — needs a follow-up
+///   raw+filtered trace to confirm it actually quiets resting jitter
+///   without dulling the swipe response validated above.
 const MAG_MINCUTOFF_HZ: f32 = 0.15;
 const MAG_BETA: f32 = 0.1;
-const MAG_DCUTOFF_HZ: f32 = 1.0;
+const MAG_DCUTOFF_HZ: f32 = 0.5;
 
 /// Temperature keeps a fixed-alpha [`Ema`]: nothing reads temperature for
 /// low-latency control, so there's no reason to let it speed up during fast
