@@ -1,7 +1,7 @@
-//! This example shows how to communicate asynchronous using i2c with external chips.
+//! Reads magnetic field and temperature data from a TMAG5273 3-axis Hall effect sensor.
 //!
-//! Example written for the [`MCP23017 16-Bit I2C I/O Expander with Serial Interface`] chip.
-//! (https://www.microchip.com/en-us/product/mcp23017)
+//! The sensor is connected to I2C0: SDA on PIN_20, SCL on PIN_21.
+//! Measurements are logged every 500 ms via RTT using defmt.
 
 #![no_std]
 #![no_main]
@@ -13,7 +13,7 @@ use embassy_rp::bind_interrupts;
 use embassy_rp::i2c::{self, Config, InterruptHandler};
 use embassy_rp::peripherals::I2C0;
 use embassy_time::{Duration, Timer};
-use embedded_hal::i2c::I2c as I2C_HAL;
+use embedded_hal_async::i2c::I2c as I2C_HAL;
 use tmag5273::TMag5273;
 use tmag5273::types::{DeviceVersion, TMag5273Error};
 use {defmt_rtt as _, panic_probe as _};
@@ -29,34 +29,33 @@ async fn main(_spawner: Spawner) {
     let sda = p.PIN_20;
     let scl = p.PIN_21;
 
-    info!("set up i2c ");
+    info!("set up i2c");
     let i2c = i2c::I2c::new_async(p.I2C0, scl, sda, Irqs, Config::default());
 
     info!("init tmag5273");
     let mut mag_sensor = TMag5273::new(i2c, DeviceVersion::TMAG5273B1)
         .unwrap()
         .init_default()
+        .await
         .unwrap();
 
-    print_device_stats(&mut mag_sensor).unwrap();
+    print_device_stats(&mut mag_sensor).await.unwrap();
 
-    // Loop round and get some data
     loop {
-        let data = mag_sensor.get_all_data().unwrap();
+        let data = mag_sensor.get_all_data().await.unwrap();
         info!("data: {:?}", defmt::Debug2Format(&data));
 
         Timer::after(Duration::from_millis(500)).await;
     }
 }
 
-// Print out some device starts by reading the Device ID and Manufacturer ID, panic if it cant be done
-fn print_device_stats<I2C>(mag_sensor: &mut TMag5273<I2C>) -> Result<(), TMag5273Error>
+async fn print_device_stats<I2C>(mag_sensor: &mut TMag5273<I2C>) -> Result<(), TMag5273Error>
 where
     I2C: I2C_HAL,
 {
-    let device_id = mag_sensor.get_device_id()?;
+    let device_id = mag_sensor.get_device_id().await?;
     info!("Device ID: {:?}", defmt::Debug2Format(&device_id));
-    let manufacturer_id = mag_sensor.get_manufacturer_id()?;
+    let manufacturer_id = mag_sensor.get_manufacturer_id().await?;
     info!(
         "Manufacturer ID: {:?}",
         defmt::Debug2Format(&manufacturer_id)
