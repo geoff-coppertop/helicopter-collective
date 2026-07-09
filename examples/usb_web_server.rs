@@ -3,7 +3,7 @@
 //! Plug the device into a Windows 10 (1903+) or Linux PC via USB.
 //! The device appears as a USB Ethernet adapter (no drivers needed).
 //! A DHCP server assigns the host an IP automatically.
-//! Open a browser at http://helicopter.local/ (or http://192.168.7.1/).
+//! Open a browser at http://helicopter.local/ (or http://198.18.7.1/).
 //!
 //! The web UI lets you:
 //!   - See live uptime
@@ -56,7 +56,11 @@ bind_interrupts!(struct Irqs {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MTU: usize = 1514;
-const DEVICE_IP: [u8; 4] = [192, 168, 7, 1];
+// 198.18.0.0/15 is the RFC 2544 benchmarking range: IANA-reserved and
+// essentially never used on real home/office networks, so serving it over the
+// USB link won't collide with a subnet the host is already connected to (as a
+// common 192.168.x.x range easily could).
+const DEVICE_IP: [u8; 4] = [198, 18, 7, 1];
 
 // ── Shared state (accessed from multiple tasks) ────────────────────────────────
 
