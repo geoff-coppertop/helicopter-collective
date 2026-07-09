@@ -15,7 +15,7 @@ use embassy_rp::i2c::{self, Config, InterruptHandler};
 use embassy_rp::peripherals::I2C0;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c as I2C_HAL;
-use helicopter_collective::filter::Ema;
+use helicopter_collective::filter::{Ema, round_to};
 use tmag5273::TMag5273;
 use tmag5273::types::{DeviceVersion, MagData, TMag5273Error};
 use {defmt_rtt as _, panic_probe as _};
@@ -61,14 +61,28 @@ impl EngineeringUnits {
     }
 }
 
-/// Smoothing factor for the per-axis EMA filters below. Lower values reject
-/// more Hall-sensor noise at the cost of more lag; tune against the sensor's
-/// actual noise floor and the sample rate (500 ms in this example).
-const FILTER_ALPHA: f32 = 0.2;
+/// Per-axis EMA smoothing factors, independently tunable since each is a
+/// physically distinct signal with its own responsiveness needs.
+///
+/// X/Y/Z are the live "3D mouse" input signal, so responsiveness matters: at
+/// the 500 ms sample rate used here, a hardware trace showed a magnet swipe
+/// taking ~40 samples (~20 s) to settle at alpha=0.2 (time constant ≈ 2.2 s)
+/// — most of that is filter lag, not the magnet actually moving that slowly.
+/// 0.4 roughly halves the time constant (≈ 1.0 s) while still knocking down
+/// single-sample spikes.
+///
+/// Temperature has no low-latency requirement — nothing reads it for
+/// control — and real temperature changes (e.g. touching the sensor) are
+/// already slow relative to the sample rate, so it can trade responsiveness
+/// for cleaner readings independently of the magnetic axes' tuning.
+const X_FILTER_ALPHA: f32 = 0.4;
+const Y_FILTER_ALPHA: f32 = 0.4;
+const Z_FILTER_ALPHA: f32 = 0.4;
+const TEMP_FILTER_ALPHA: f32 = 0.1;
 
-/// Applies an independent exponential moving average to each field of
-/// [`EngineeringUnits`], since each axis (and temperature) is a physically
-/// distinct signal.
+/// Applies an independent [`Ema`] instance to each field of
+/// [`EngineeringUnits`]: same filter, reused per axis, each with its own
+/// tunable alpha.
 struct EngineeringUnitsFilter {
     x: Ema,
     y: Ema,
@@ -77,12 +91,12 @@ struct EngineeringUnitsFilter {
 }
 
 impl EngineeringUnitsFilter {
-    const fn new(alpha: f32) -> Self {
+    const fn new() -> Self {
         Self {
-            x: Ema::new(alpha),
-            y: Ema::new(alpha),
-            z: Ema::new(alpha),
-            temperature: Ema::new(alpha),
+            x: Ema::new(X_FILTER_ALPHA),
+            y: Ema::new(Y_FILTER_ALPHA),
+            z: Ema::new(Z_FILTER_ALPHA),
+            temperature: Ema::new(TEMP_FILTER_ALPHA),
         }
     }
 
@@ -115,14 +129,17 @@ async fn main(_spawner: Spawner) {
 
     print_device_stats(&mut mag_sensor).await.unwrap();
 
-    let mut filter = EngineeringUnitsFilter::new(FILTER_ALPHA);
+    let mut filter = EngineeringUnitsFilter::new();
 
     loop {
         let data = mag_sensor.get_all_data().await.unwrap();
         let units = filter.update(&EngineeringUnits::from_raw(&data));
         info!(
             "x: {} mT, y: {} mT, z: {} mT, temp: {} C",
-            units.x_mt, units.y_mt, units.z_mt, units.temperature_c
+            round_to(units.x_mt, 1000.0),
+            round_to(units.y_mt, 1000.0),
+            round_to(units.z_mt, 1000.0),
+            round_to(units.temperature_c, 10.0)
         );
 
         Timer::after(Duration::from_millis(500)).await;

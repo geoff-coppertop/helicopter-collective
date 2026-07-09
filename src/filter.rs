@@ -28,9 +28,40 @@ impl Ema {
     }
 }
 
+/// Rounds `value` to the nearest `1 / scale` (e.g. `scale = 1000.0` rounds to
+/// 3 decimal places).
+///
+/// defmt's `{}` format specifier has no `core::fmt`-style precision hint
+/// (`{:.N}`), so trimming a noisy float's displayed precision means
+/// rounding the value itself before logging it. `f32::round`/`powi` need
+/// `std` or `libm`, neither of which this crate depends on, so this rounds
+/// half-away-from-zero using only a float-to-int cast (a core language
+/// feature, not a libm call).
+pub fn round_to(value: f32, scale: f32) -> f32 {
+    let scaled = value * scale;
+    let rounded = if scaled >= 0.0 {
+        (scaled + 0.5) as i32
+    } else {
+        (scaled - 0.5) as i32
+    };
+    rounded as f32 / scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_to_truncates_to_requested_precision() {
+        assert!((round_to(1.23456, 100.0) - 1.23).abs() < 1e-5);
+        assert!((round_to(1.23456, 1.0) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn round_to_rounds_to_nearest() {
+        assert!((round_to(1.237, 100.0) - 1.24).abs() < 1e-5);
+        assert!((round_to(-1.237, 100.0) - (-1.24)).abs() < 1e-5);
+    }
 
     #[test]
     fn first_sample_is_returned_unfiltered() {
