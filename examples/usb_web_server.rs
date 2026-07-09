@@ -1,0 +1,810 @@
+//! Standalone example: USB CDC-NCM web server on RP2350.
+//!
+//! Plug the device into a Windows 10 (1903+) or Linux PC via USB.
+//! The device appears as a USB Ethernet adapter (no drivers needed).
+//! A DHCP server assigns the host an IP automatically.
+//! Open a browser at http://helicopter.local/ (or http://198.18.7.1/).
+//!
+//! The web UI lets you:
+//!   - See live uptime
+//!   - Change the LED blink rate with a slider
+//!   - Rename the mDNS friendly name (e.g. "mydevice" → mydevice.local)
+//!
+//! The unique per-chip name (helicopter-XXXXXX.local) always works regardless.
+//!
+//! Run with: cargo run --example usb_web_server
+
+#![no_std]
+#![no_main]
+#![feature(impl_trait_in_assoc_type)]
+
+use core::fmt::Write as FmtWrite;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use defmt::info;
+use embassy_executor::Spawner;
+use embassy_net::{
+    Config as NetConfig, IpAddress, IpEndpoint, Ipv4Address, Ipv4Cidr, Stack, StackResources,
+    StaticConfigV4,
+};
+use embassy_rp::bind_interrupts;
+use embassy_rp::gpio::{Level, Output};
+use embassy_rp::peripherals::{TRNG, USB};
+use embassy_rp::trng::{Config as TrngConfig, InterruptHandler as TrngIrq, Trng};
+use embassy_rp::usb::{Driver as UsbDriver, InterruptHandler as UsbIrq};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Instant, Timer, with_timeout};
+use embassy_usb::class::cdc_ncm::embassy_net::{
+    Device as NcmDevice, Runner as NcmRunner, State as NcmNetState,
+};
+use embassy_usb::class::cdc_ncm::{CdcNcmClass, State as NcmState};
+use embassy_usb::{Builder as UsbBuilder, Config as UsbConfig};
+use heapless::String as HString;
+use picoserve::response::{Content, IntoResponse};
+use picoserve::routing;
+use picoserve::{Config as ServeConfig, Router, Timeouts};
+use static_cell::StaticCell;
+use {defmt_rtt as _, panic_probe as _};
+
+bind_interrupts!(struct Irqs {
+    USBCTRL_IRQ => UsbIrq<USB>;
+    TRNG_IRQ    => TrngIrq<TRNG>;
+});
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MTU: usize = 1514;
+// 198.18.0.0/15 is the RFC 2544 benchmarking range: IANA-reserved and
+// essentially never used on real home/office networks, so serving it over the
+// USB link won't collide with a subnet the host is already connected to (as a
+// common 192.168.x.x range easily could).
+const DEVICE_IP: [u8; 4] = [198, 18, 7, 1];
+
+// ── Shared state (accessed from multiple tasks) ────────────────────────────────
+
+/// LED blink interval in milliseconds.
+static BLINK_MS: AtomicU32 = AtomicU32::new(500);
+
+/// User-settable friendly mDNS hostname (without ".local").
+static FRIENDLY_NAME: Mutex<CriticalSectionRawMutex, HString<64>> =
+    Mutex::new(HString::new());
+
+// ── Static allocations ─────────────────────────────────────────────────────────
+
+static NCM_STATE: StaticCell<NcmState> = StaticCell::new();
+static NCM_NET_STATE: StaticCell<NcmNetState<MTU, 4, 4>> = StaticCell::new();
+static NET_RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
+
+type MyUsb = UsbDriver<'static, USB>;
+
+// ── Embassy tasks ──────────────────────────────────────────────────────────────
+
+#[embassy_executor::task]
+async fn usb_task(mut device: embassy_usb::UsbDevice<'static, MyUsb>) -> ! {
+    device.run().await
+}
+
+#[embassy_executor::task]
+async fn ncm_task(runner: NcmRunner<'static, MyUsb, MTU>) -> ! {
+    runner.run().await
+}
+
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, NcmDevice<'static, MTU>>) -> ! {
+    runner.run().await
+}
+
+#[embassy_executor::task]
+async fn dhcp_task(stack: Stack<'static>) -> ! {
+    use core::net::Ipv4Addr;
+    let config = leasehund::DhcpConfigBuilder::<1>::new()
+        .server_ip(Ipv4Addr::from(DEVICE_IP))
+        .subnet_mask(Ipv4Addr::new(255, 255, 255, 0))
+        .no_router() // host keeps its existing default route
+        .ip_pool(
+            Ipv4Addr::new(DEVICE_IP[0], DEVICE_IP[1], DEVICE_IP[2], 100),
+            Ipv4Addr::new(DEVICE_IP[0], DEVICE_IP[1], DEVICE_IP[2], 199),
+        )
+        .build();
+    let mut server = leasehund::DhcpServer::<8, 1>::with_config(config);
+    // Log every completed lease/release so the RTT log shows the DHCP
+    // handshake handing out an address.
+    server
+        .run_with_callback(stack, |event| {
+            info!("DHCP transaction: {}", event);
+        })
+        .await
+}
+
+/// Signalled with a caller-requested friendly name whenever the user asks to
+/// rename the device, so `mdns_task` — the sole owner of `FRIENDLY_NAME` and
+/// the mDNS socket — can probe it for conflicts, commit it, and announce the
+/// change, instead of the HTTP handler committing an unprobed name directly.
+static NAME_REQUEST: Signal<CriticalSectionRawMutex, HString<64>> = Signal::new();
+
+const MAX_PROBE_ATTEMPTS: u8 = 4;
+const PROBE_WINDOW_MS: u64 = 750;
+
+/// Probes for `base_name` and, on conflict with another responder, tries
+/// `base_name-2`, `base_name-3`, ... up to [`MAX_PROBE_ATTEMPTS`] (RFC 6762
+/// §8.1 probing, §9 conflict resolution). Returns the first name found
+/// unclaimed, or the last-tried candidate if every attempt conflicts.
+async fn resolve_name_conflict(
+    socket: &mut embassy_net::udp::UdpSocket<'_>,
+    pkt: &mut [u8],
+    resp: &mut [u8],
+    mcast: IpAddress,
+    device_ip: [u8; 4],
+    base_name: &str,
+) -> HString<64> {
+    let mut candidate = HString::<64>::new();
+    candidate.push_str(base_name).ok();
+
+    for attempt in 0..MAX_PROBE_ATTEMPTS {
+        let mut name_enc = [0u8; 80];
+        let name_len = encode_mdns_name(&mut name_enc, candidate.as_str(), "local");
+
+        let query_len = build_mdns_query(resp, &name_enc[..name_len], 255 /* ANY */);
+        socket
+            .send_to(&resp[..query_len], IpEndpoint::new(mcast, 5353))
+            .await
+            .ok();
+
+        let deadline = Instant::now() + Duration::from_millis(PROBE_WINDOW_MS);
+        let mut conflict = false;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match with_timeout(deadline - now, socket.recv_from(pkt)).await {
+                Ok(Ok((n, _src))) => {
+                    if let Some(claimed_ip) = parse_response_claim(&pkt[..n], &name_enc[..name_len])
+                    {
+                        if claimed_ip != device_ip {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        if !conflict {
+            return candidate;
+        }
+
+        candidate.clear();
+        write!(&mut candidate, "{}-{}", base_name, attempt + 2).ok();
+    }
+
+    candidate
+}
+
+#[embassy_executor::task]
+async fn mdns_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
+    use embassy_futures::select::{select, Either};
+    use embassy_net::udp::{PacketMetadata, UdpSocket};
+
+    let mcast = IpAddress::v4(224, 0, 0, 251);
+
+    stack.wait_config_up().await;
+    stack.join_multicast_group(mcast).ok();
+
+    static RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
+    static TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
+    static RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
+    static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
+
+    let mut socket = UdpSocket::new(
+        stack,
+        RX_META.init([PacketMetadata::EMPTY; 4]),
+        RX_BUF.init([0u8; 1024]),
+        TX_META.init([PacketMetadata::EMPTY; 4]),
+        TX_BUF.init([0u8; 1024]),
+    );
+    socket.bind(5353).ok();
+
+    let mut pkt = [0u8; 512];
+    let mut resp = [0u8; 512];
+
+    let mut unique_name = HString::<32>::new();
+    write!(
+        &mut unique_name,
+        "helicopter-{:02x}{:02x}{:02x}",
+        unique_suffix[0], unique_suffix[1], unique_suffix[2]
+    )
+    .ok();
+    let mut unique_enc = [0u8; 80];
+    let unique_len = encode_mdns_name(&mut unique_enc, unique_name.as_str(), "local");
+
+    // Probe for the boot-time friendly name before claiming it, resolving
+    // any conflict with another device that already holds it (RFC 6762
+    // §8.1/§9), then announce twice ~1s apart (§8.3) so listeners that were
+    // already caching a now-stale answer for this name pick up the change.
+    let boot_name = { FRIENDLY_NAME.lock().await.clone() };
+    let resolved_boot_name = resolve_name_conflict(
+        &mut socket,
+        &mut pkt,
+        &mut resp,
+        mcast,
+        DEVICE_IP,
+        boot_name.as_str(),
+    )
+    .await;
+    {
+        let mut name = FRIENDLY_NAME.lock().await;
+        name.clear();
+        name.push_str(resolved_boot_name.as_str()).ok();
+    }
+    for _ in 0..2 {
+        let mut friendly_enc = [0u8; 80];
+        let friendly_len =
+            encode_mdns_name(&mut friendly_enc, resolved_boot_name.as_str(), "local");
+        let announce_len =
+            build_mdns_announcement(&mut resp, &friendly_enc[..friendly_len], DEVICE_IP, 120);
+        socket
+            .send_to(&resp[..announce_len], IpEndpoint::new(mcast, 5353))
+            .await
+            .ok();
+        let announce_len =
+            build_mdns_announcement(&mut resp, &unique_enc[..unique_len], DEVICE_IP, 120);
+        socket
+            .send_to(&resp[..announce_len], IpEndpoint::new(mcast, 5353))
+            .await
+            .ok();
+        Timer::after(Duration::from_secs(1)).await;
+    }
+
+    loop {
+        match select(socket.recv_from(&mut pkt), NAME_REQUEST.wait()).await {
+            Either::First(Ok((n, _src))) => {
+                let mut friendly_enc = [0u8; 80];
+                let friendly_len = {
+                    let name = FRIENDLY_NAME.lock().await;
+                    encode_mdns_name(&mut friendly_enc, name.as_str(), "local")
+                };
+
+                if let Some(resp_len) = handle_mdns_query(
+                    &pkt[..n],
+                    &mut resp,
+                    DEVICE_IP,
+                    &friendly_enc[..friendly_len],
+                    &unique_enc[..unique_len],
+                ) {
+                    // RFC 6762 §6.3: jitter the response slightly so many
+                    // responders answering the same multicast query don't
+                    // collide.
+                    let seed = Instant::now().as_micros() as u32 ^ u32::from(pkt[0]);
+                    Timer::after(Duration::from_millis(jitter_delay_ms(seed) as u64)).await;
+                    socket
+                        .send_to(&resp[..resp_len], IpEndpoint::new(mcast, 5353))
+                        .await
+                        .ok();
+                }
+            }
+            Either::First(Err(_)) => {}
+            Either::Second(requested_name) => {
+                let old_name = { FRIENDLY_NAME.lock().await.clone() };
+                let resolved = resolve_name_conflict(
+                    &mut socket,
+                    &mut pkt,
+                    &mut resp,
+                    mcast,
+                    DEVICE_IP,
+                    requested_name.as_str(),
+                )
+                .await;
+                {
+                    let mut name = FRIENDLY_NAME.lock().await;
+                    name.clear();
+                    name.push_str(resolved.as_str()).ok();
+                }
+
+                let mut old_enc = [0u8; 80];
+                let old_len = encode_mdns_name(&mut old_enc, old_name.as_str(), "local");
+                let goodbye_len =
+                    build_mdns_announcement(&mut resp, &old_enc[..old_len], DEVICE_IP, 0);
+                socket
+                    .send_to(&resp[..goodbye_len], IpEndpoint::new(mcast, 5353))
+                    .await
+                    .ok();
+
+                let mut friendly_enc = [0u8; 80];
+                let friendly_len = encode_mdns_name(&mut friendly_enc, resolved.as_str(), "local");
+                let announce_len = build_mdns_announcement(
+                    &mut resp,
+                    &friendly_enc[..friendly_len],
+                    DEVICE_IP,
+                    120,
+                );
+                socket
+                    .send_to(&resp[..announce_len], IpEndpoint::new(mcast, 5353))
+                    .await
+                    .ok();
+            }
+        }
+    }
+}
+
+use helicopter_collective::mdns::{
+    build_mdns_announcement, build_mdns_query, encode_mdns_name, handle_mdns_query,
+    jitter_delay_ms, parse_response_claim,
+};
+
+// ── HTTP ───────────────────────────────────────────────────────────────────────
+
+/// Custom Content type that sets Content-Type: application/json.
+struct JsonBody<const N: usize>([u8; N], usize);
+
+impl<const N: usize> Content for JsonBody<N> {
+    fn content_type(&self) -> &'static str {
+        "application/json"
+    }
+
+    fn content_length(&self) -> usize {
+        self.1
+    }
+
+    async fn write_content<W: picoserve::io::Write>(self, mut writer: W) -> Result<(), W::Error> {
+        writer.write_all(&self.0[..self.1]).await
+    }
+}
+
+struct SetBlinkHandler;
+
+impl picoserve::routing::RequestHandlerService for SetBlinkHandler {
+    async fn call_request_handler_service<R: picoserve::io::Read, W: picoserve::response::ResponseWriter<Error = R::Error>>(
+        &self,
+        _state: &(),
+        _: (),
+        mut request: picoserve::request::Request<'_, R>,
+        response_writer: W,
+    ) -> Result<picoserve::ResponseSent, W::Error> {
+        let ms = request
+            .body_connection
+            .body()
+            .read_all()
+            .await
+            .ok()
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        if let Some(ms) = ms {
+            BLINK_MS.store(ms.clamp(50, 2000), Ordering::Relaxed);
+        }
+        "ok".write_to(request.body_connection.finalize().await?, response_writer).await
+    }
+}
+
+struct SetNameHandler;
+
+impl picoserve::routing::RequestHandlerService for SetNameHandler {
+    async fn call_request_handler_service<R: picoserve::io::Read, W: picoserve::response::ResponseWriter<Error = R::Error>>(
+        &self,
+        _state: &(),
+        _: (),
+        mut request: picoserve::request::Request<'_, R>,
+        response_writer: W,
+    ) -> Result<picoserve::ResponseSent, W::Error> {
+        let trimmed = request
+            .body_connection
+            .body()
+            .read_all()
+            .await
+            .ok()
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .map(|s| {
+                let mut t = HString::<64>::new();
+                t.push_str(s.trim()).ok();
+                t
+            });
+        if let Some(name) = trimmed {
+            if !name.is_empty() {
+                let current = FRIENDLY_NAME.lock().await;
+                if current.as_str() != name.as_str() {
+                    NAME_REQUEST.signal(name);
+                }
+            }
+        }
+        "ok".write_to(request.body_connection.finalize().await?, response_writer).await
+    }
+}
+
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Helicopter Collective</title>
+  <style>
+    :root{
+      --bg:#fff; --fg:#222; --card-border:#ccc; --input-border:#aaa;
+      --mono-bg:#f5f5f5; --mono-fg:#222; --dim:#777;
+      --code-bg:#f6f8fa; --code-fg:#24292f; --code-border:#d0d7de;
+      --icon-btn-fg:#57606a; --icon-btn-hover-bg:rgba(0,0,0,.08);
+    }
+    @media (prefers-color-scheme:dark){
+      :root{
+        --bg:#1e1e1e; --fg:#ddd; --card-border:#444; --input-border:#555;
+        --mono-bg:#2a2a2a; --mono-fg:#ddd; --dim:#999;
+        --code-bg:#161b22; --code-fg:#c9d1d9; --code-border:#30363d;
+        --icon-btn-fg:#8b949e; --icon-btn-hover-bg:rgba(255,255,255,.1);
+      }
+    }
+    :root[data-theme="light"]{
+      --bg:#fff; --fg:#222; --card-border:#ccc; --input-border:#aaa;
+      --mono-bg:#f5f5f5; --mono-fg:#222; --dim:#777;
+      --code-bg:#f6f8fa; --code-fg:#24292f; --code-border:#d0d7de;
+      --icon-btn-fg:#57606a; --icon-btn-hover-bg:rgba(0,0,0,.08);
+    }
+    :root[data-theme="dark"]{
+      --bg:#1e1e1e; --fg:#ddd; --card-border:#444; --input-border:#555;
+      --mono-bg:#2a2a2a; --mono-fg:#ddd; --dim:#999;
+      --code-bg:#161b22; --code-fg:#c9d1d9; --code-border:#30363d;
+      --icon-btn-fg:#8b949e; --icon-btn-hover-bg:rgba(255,255,255,.1);
+    }
+    body{font-family:sans-serif;max-width:520px;margin:2em auto;padding:0 1em;background:var(--bg);color:var(--fg)}
+    .titlebar{display:flex;align-items:center;justify-content:space-between}
+    h1{font-size:1.4em;margin-bottom:0.2em}
+    .theme-menu-wrap{position:relative}
+    #theme-toggle{margin:0;padding:.3em;line-height:1;font-size:1.1em;background:none;border:none;border-radius:4px;color:var(--icon-btn-fg)}
+    #theme-toggle:hover{background:var(--icon-btn-hover-bg)}
+    .theme-menu{display:none;position:absolute;right:0;top:100%;padding-top:.25em;min-width:8em;
+      z-index:1}
+    .theme-menu-inner{background:var(--bg);border:1px solid var(--card-border);border-radius:6px;padding:.3em;
+      box-shadow:0 2px 8px rgba(0,0,0,.15)}
+    .theme-menu-wrap:hover .theme-menu,.theme-menu-wrap.open .theme-menu{display:block}
+    .theme-menu button{display:flex;align-items:center;gap:.5em;width:100%;margin:0;padding:.4em .5em;
+      background:none;border:none;border-radius:4px;font-size:.9em;color:var(--fg);text-align:left;cursor:pointer}
+    .theme-menu button:hover{background:var(--icon-btn-hover-bg)}
+    .theme-menu button[aria-selected="true"]{font-weight:bold}
+    .card{margin:1.2em 0;padding:1em;border:1px solid var(--card-border);border-radius:8px}
+    label{display:block;margin:.4em 0 .15em;font-size:.9em}
+    input[type=range]{width:100%}
+    input[type=text],input[type=number]{width:100%;box-sizing:border-box;padding:.35em;border:1px solid var(--input-border);border-radius:4px;background:var(--bg);color:var(--fg)}
+    input[type=number]{margin-top:.4em}
+    button{margin-top:.6em;padding:.4em 1em;cursor:pointer}
+    #status{font-family:monospace;background:var(--mono-bg);color:var(--mono-fg);padding:.5em .7em;border-radius:4px;font-size:.9em}
+    .dim{color:var(--dim);font-size:.85em}
+    .copyline{display:flex;align-items:center;justify-content:space-between;gap:.5em;margin:.2em 0 .6em;
+      background:var(--code-bg);border:1px solid var(--code-border);border-radius:6px;padding:.5em .5em .5em .75em}
+    .copyline code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--code-fg);background:none;padding:0;user-select:all}
+    .copyline button{margin:0;padding:.3em;line-height:1;font-size:1em;background:none;border:none;border-radius:4px;color:var(--icon-btn-fg)}
+    .copyline button:hover{background:var(--icon-btn-hover-bg)}
+    .unsaved-dot{color:#e0a100;font-size:.6em;vertical-align:middle;visibility:hidden}
+    .unsaved-dot.show{visibility:visible}
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <h1>&#x1F681; Helicopter Collective</h1>
+    <div class="theme-menu-wrap" id="theme-menu-wrap">
+      <button id="theme-toggle" title="Colour theme" aria-label="Colour theme" aria-haspopup="true"
+              onclick="document.getElementById('theme-menu-wrap').classList.toggle('open')">&#x1F313;</button>
+      <div class="theme-menu" id="theme-menu">
+        <div class="theme-menu-inner" role="menu">
+          <button role="menuitemradio" data-mode="auto" onclick="setTheme('auto')">&#x1F313; Auto</button>
+          <button role="menuitemradio" data-mode="light" onclick="setTheme('light')">&#x2600;&#xFE0F; Light</button>
+          <button role="menuitemradio" data-mode="dark" onclick="setTheme('dark')">&#x1F319; Dark</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <strong>Status</strong>
+    <div id="status">connecting&hellip;</div>
+  </div>
+  <div class="card">
+    <strong>LED blink rate</strong> <span class="unsaved-dot" id="blink-dot" title="Unsaved change">&#x25CF;</span>
+    <label>Interval (ms)</label>
+    <input type="range" id="blink" min="50" max="2000" value="500"
+           oninput="markDirty('blink',true);syncBlink(this.value)" onchange="scheduleSetBlink()">
+    <input type="number" id="blink-num" min="50" max="2000" value="500"
+           oninput="markDirty('blink',true);syncBlink(this.value)" onchange="scheduleSetBlink()"
+           onfocus="this.select()" onkeydown="commitOnEnter(event,scheduleSetBlink)">
+  </div>
+  <div class="card">
+    <strong>mDNS name</strong> <span class="unsaved-dot" id="name-dot" title="Unsaved change">&#x25CF;</span>
+    <label>Friendly name</label>
+    <div class="copyline"><code id="fname-code">&#x2026;</code><button title="Copy" aria-label="Copy" onclick="copyText('fname-code',this)">&#x2398;</button></div>
+    <label class="dim">Unique name (always works)</label>
+    <div class="copyline"><code id="uname-code">&#x2026;</code><button title="Copy" aria-label="Copy" onclick="copyText('uname-code',this)">&#x2398;</button></div>
+    <input type="text" id="new-name" maxlength="63" value="helicopter"
+           oninput="markDirty('name',true)" onfocus="this.select()"
+           onchange="setName()" onkeydown="commitOnEnter(event,setName)">
+  </div>
+  <script>
+    const THEME_KEY='hc-theme';
+    const THEME_ICONS={auto:'\u{1F313}',light:'☀️',dark:'\u{1F319}'};
+    function applyTheme(mode){
+      if(mode==='light'||mode==='dark'){
+        document.documentElement.setAttribute('data-theme',mode);
+      }else{
+        document.documentElement.removeAttribute('data-theme');
+      }
+      document.getElementById('theme-toggle').textContent=THEME_ICONS[mode];
+      document.querySelectorAll('.theme-menu button').forEach(b=>{
+        b.setAttribute('aria-selected',b.dataset.mode===mode?'true':'false');
+      });
+    }
+    function setTheme(mode){
+      localStorage.setItem(THEME_KEY,mode);
+      applyTheme(mode);
+      document.getElementById('theme-menu-wrap').classList.remove('open');
+    }
+    document.addEventListener('click',e=>{
+      const wrap=document.getElementById('theme-menu-wrap');
+      if(!wrap.contains(e.target))wrap.classList.remove('open');
+    });
+    applyTheme(localStorage.getItem(THEME_KEY)||'auto');
+    const dirty={blink:false,name:false};
+    function markDirty(field,value){
+      dirty[field]=value;
+      document.getElementById(field+'-dot').classList.toggle('show',value);
+    }
+    function commitOnEnter(event,commitFn){
+      if(event.key==='Enter'){
+        event.preventDefault();
+        commitFn();
+        event.target.select();
+      }
+    }
+    async function refresh(){
+      try{
+        const d=await fetch('/api/status').then(r=>r.json());
+        document.getElementById('status').textContent='Uptime: '+d.uptime_secs+'s';
+        if(!dirty.blink){
+          document.getElementById('blink').value=d.blink_ms;
+          document.getElementById('blink-num').value=d.blink_ms;
+        }
+        document.getElementById('fname-code').textContent=d.friendly_name+'.local';
+        document.getElementById('uname-code').textContent=d.unique_name+'.local';
+      }catch(e){
+        document.getElementById('status').textContent='offline';
+      }
+    }
+    async function copyText(id,btn){
+      const text=document.getElementById(id).textContent;
+      try{
+        await navigator.clipboard.writeText(text);
+      }catch(e){
+        const range=document.createRange();
+        range.selectNodeContents(document.getElementById(id));
+        const sel=window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+      }
+      const orig=btn.textContent;
+      btn.textContent='✓';
+      setTimeout(()=>{btn.textContent=orig;},1200);
+    }
+    function syncBlink(value){
+      document.getElementById('blink').value=value;
+      document.getElementById('blink-num').value=value;
+    }
+    let blinkDebounce=null;
+    function scheduleSetBlink(){
+      clearTimeout(blinkDebounce);
+      blinkDebounce=setTimeout(setBlink,250);
+    }
+    let blinkInFlight=false;
+    async function setBlink(){
+      if(blinkInFlight)return;
+      blinkInFlight=true;
+      try{
+        const ms=document.getElementById('blink-num').value;
+        await fetch('/api/blink',{method:'POST',body:String(ms)});
+        markDirty('blink',false);
+      }finally{
+        blinkInFlight=false;
+      }
+    }
+    async function setName(){
+      const n=document.getElementById('new-name').value.trim();
+      if(!n)return;
+      await fetch('/api/name',{method:'POST',body:n});
+      markDirty('name',false);
+      setTimeout(refresh,400);
+    }
+    setInterval(refresh,2000);
+    refresh();
+  </script>
+</body>
+</html>"#;
+
+#[embassy_executor::task]
+async fn http_task(stack: Stack<'static>, unique_suffix: [u8; 3]) -> ! {
+    static HTTP_RX: StaticCell<[u8; 1024]> = StaticCell::new();
+    static HTTP_TX: StaticCell<[u8; 1024]> = StaticCell::new();
+    static HTTP_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
+
+    let tcp_rx = HTTP_RX.init([0u8; 1024]);
+    let tcp_tx = HTTP_TX.init([0u8; 1024]);
+    let http_buf = HTTP_BUF.init([0u8; 2048]);
+
+    // Build the unique name string once, stored in a static so it's 'static.
+    let unique_name: &'static str = {
+        static UN: StaticCell<HString<32>> = StaticCell::new();
+        let mut s = HString::<32>::new();
+        write!(
+            &mut s,
+            "helicopter-{:02x}{:02x}{:02x}",
+            unique_suffix[0], unique_suffix[1], unique_suffix[2]
+        )
+        .ok();
+        UN.init(s).as_str()
+    };
+
+    let app = Router::new()
+        .route(
+            "/",
+            routing::get_service(picoserve::response::fs::File::html(INDEX_HTML)),
+        )
+        .route(
+            "/api/status",
+            routing::get(async move || {
+                let blink_ms = BLINK_MS.load(Ordering::Relaxed);
+                let uptime_secs = Instant::now().as_secs();
+
+                // Lock the name briefly to read it
+                let mut buf = [0u8; 256];
+                let len = {
+                    let name = FRIENDLY_NAME.lock().await;
+                    helicopter_collective::status::format_status_json(
+                        &mut buf,
+                        blink_ms,
+                        uptime_secs,
+                        name.as_str(),
+                        unique_name,
+                    )
+                    .unwrap_or(0)
+                }; // MutexGuard dropped here
+                JsonBody(buf, len)
+            }),
+        )
+        .route(
+            "/api/blink",
+            routing::post_service(SetBlinkHandler),
+        )
+        .route(
+            "/api/name",
+            routing::post_service(SetNameHandler),
+        );
+
+    let config = ServeConfig::new(Timeouts::default());
+
+    loop {
+        picoserve::Server::new(&app, &config, http_buf)
+            .listen_and_serve(0u8, stack, 80, tcp_rx, tcp_tx)
+            .await;
+    }
+}
+
+#[embassy_executor::task]
+async fn led_task(mut led: Output<'static>) -> ! {
+    loop {
+        let ms = BLINK_MS.load(Ordering::Relaxed);
+        led.set_high();
+        Timer::after(Duration::from_millis(50)).await;
+        led.set_low();
+        Timer::after(Duration::from_millis(ms as u64)).await;
+    }
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────────
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+    info!("USB web server example starting");
+
+    // Read chip unique ID from OTP for per-device names and MAC address
+    let chip_id = embassy_rp::otp::get_chipid().unwrap_or(0xDEAD_BEEF_DEAD_BEEF_u64);
+    let id = chip_id.to_be_bytes();
+    let unique_suffix = [id[5], id[6], id[7]];
+
+    // Two distinct MAC addresses derived from the chip ID, one for each end of
+    // the USB Ethernet link. They must differ (same MAC on both ends breaks
+    // delivery), and the *host*-side address must NOT have the
+    // locally-administered bit (bit 1 of the first octet) set — embassy-usb's
+    // CDC-NCM docs warn that some hosts (Windows in particular) won't bring the
+    // link up otherwise, leaving the adapter at "Media disconnected".
+    //
+    // host_mac   -> the address Windows' virtual adapter uses (iMACAddress);
+    //               first octet 0x00 => universally-administered, unicast.
+    // device_mac -> the address this device's own network stack uses;
+    //               first octet 0x02 => locally-administered, fine on this side.
+    let host_mac = [0x00u8, id[0], id[1], id[2], id[3], id[4]];
+    let device_mac = [0x02u8, id[0], id[1], id[2], id[3], id[4]];
+
+    // Seed the network stack with entropy from the TRNG
+    let mut trng = Trng::new(p.TRNG, Irqs, TrngConfig::default());
+    let seed = trng.blocking_next_u64();
+
+    // Set default friendly hostname
+    {
+        let mut name = FRIENDLY_NAME.lock().await;
+        name.push_str("helicopter").ok();
+    }
+
+    // ── USB setup ──────────────────────────────────────────────────────────────
+
+    let usb_driver = UsbDriver::new(p.USB, Irqs);
+
+    let mut usb_config = UsbConfig::new(0x6666, 0x0001);
+    usb_config.manufacturer = Some("Helicopter Collective");
+    usb_config.product = Some("HC Web Example");
+    usb_config.serial_number = Some("HC0001");
+    // Miscellaneous/IAD composite device class. These are already the
+    // embassy-usb defaults (a CDC-NCM function is described via an Interface
+    // Association Descriptor), set explicitly here for clarity. Windows binds
+    // its UsbNcm driver via the interface-level CDC/NCM descriptors.
+    usb_config.device_class = 0xEF;
+    usb_config.device_sub_class = 0x02;
+    usb_config.device_protocol = 0x01;
+
+    static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    static MSOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    // 128 bytes matches embassy's reference NCM example; the control-transfer
+    // data staging buffer must be comfortably larger than the longest string
+    // descriptor the host reads during enumeration.
+    static CTRL_BUF: StaticCell<[u8; 128]> = StaticCell::new();
+
+    let mut usb_builder = UsbBuilder::new(
+        usb_driver,
+        usb_config,
+        CONFIG_DESC.init([0u8; 256]),
+        BOS_DESC.init([0u8; 256]),
+        MSOS_DESC.init([0u8; 256]),
+        CTRL_BUF.init([0u8; 128]),
+    );
+
+    // CDC-NCM class (Ethernet over USB). The MAC passed here is the
+    // iMACAddress — the address the host's virtual adapter takes on.
+    let ncm = CdcNcmClass::new(
+        &mut usb_builder,
+        NCM_STATE.init(NcmState::new()),
+        host_mac,
+        64, // full-speed USB max packet size
+    );
+
+    let usb_device = usb_builder.build();
+
+    // Convert CDC-NCM into an embassy-net Ethernet driver
+    let (ncm_runner, eth_device) = ncm.into_embassy_net_device::<MTU, 4, 4>(
+        NCM_NET_STATE.init(NcmNetState::new()),
+        device_mac,
+    );
+
+    // ── Network stack (static IP) ──────────────────────────────────────────────
+
+    let (stack, net_runner) = embassy_net::new(
+        eth_device,
+        NetConfig::ipv4_static(StaticConfigV4 {
+            address: Ipv4Cidr::new(
+                Ipv4Address::new(DEVICE_IP[0], DEVICE_IP[1], DEVICE_IP[2], DEVICE_IP[3]),
+                24,
+            ),
+            gateway: None,
+            dns_servers: heapless::Vec::new(),
+        }),
+        NET_RESOURCES.init(StackResources::new()),
+        seed,
+    );
+
+    // ── Spawn all tasks ────────────────────────────────────────────────────────
+
+    spawner.spawn(usb_task(usb_device).unwrap());
+    spawner.spawn(ncm_task(ncm_runner).unwrap());
+    spawner.spawn(net_task(net_runner).unwrap());
+    spawner.spawn(dhcp_task(stack).unwrap());
+    spawner.spawn(mdns_task(stack, unique_suffix).unwrap());
+    spawner.spawn(http_task(stack, unique_suffix).unwrap());
+    spawner.spawn(led_task(Output::new(p.PIN_25, Level::Low)).unwrap());
+}

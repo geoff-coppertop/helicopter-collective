@@ -4,9 +4,8 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_rp::gpio;
+use embassy_rp::gpio::{Level, Output};
 use embassy_time::{Duration, Timer};
-use gpio::{Level, Output};
 use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::main]

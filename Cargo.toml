@@ -4,13 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# No embedded-specific crates here — they're gated to the ARM target below
+# so that `cargo test-host` (x86_64) can compile the library without ARM asm.
+
+[target.'cfg(target_arch = "arm")'.dependencies]
 cortex-m-rt = "0.7.5"
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
-embassy-executor = { version = "0.7.0", features = ["nightly", "arch-cortex-m", "executor-thread"] }
-embassy-rp = { version = "0.4.0", features = ["binary-info", "critical-section-impl", "rp235xa", "time-driver"] }
-embassy-time = "0.4.0"
+embassy-executor = { version = "0.10.0", features = ["nightly", "platform-cortex-m", "executor-thread"] }
+embassy-futures = "0.1"
+embassy-net = { version = "0.9.1", features = ["tcp", "udp", "medium-ethernet", "proto-ipv4", "multicast", "defmt"] }
+embassy-rp = { version = "0.10.0", features = ["binary-info", "critical-section-impl", "rp235xa", "time-driver"] }
+embassy-sync = "0.8"
+embassy-time = "0.5"
+embassy-usb = { version = "0.6.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
+heapless = "0.9"
+leasehund = { version = "0.5.0", features = ["defmt"] }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+picoserve = { version = "0.18.0", features = ["embassy", "defmt"] }
+static_cell = "2"
 # Temporarily disabled: dysonltd/tmag5273 repo is private (404 on fetch). Only used by examples/mag_read.rs.
 # tmag5273 = { git = "https://github.com/dysonltd/tmag5273.git", version = "0.1.1" }
