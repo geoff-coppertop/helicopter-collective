@@ -1,0 +1,5 @@
+# Override the workspace-level embedded target so `cargo test` runs on the host.
+# The parent .cargo/config.toml forces thumbv8m.main-none-eabihf for firmware
+# builds; tests compile for the host (std is required by embedded-hal-mock).
+[build]
+target = "x86_64-unknown-linux-gnu"

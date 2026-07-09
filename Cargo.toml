@@ -19,10 +19,10 @@ embassy-sync = "0.8"
 embassy-time = "0.5"
 embassy-usb = { version = "0.6.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
 heapless = "0.9"
 leasehund = { version = "0.5.0", features = ["defmt"] }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 picoserve = { version = "0.18.0", features = ["embassy", "defmt"] }
 static_cell = "2"
-# Temporarily disabled: dysonltd/tmag5273 repo is private (404 on fetch). Only used by examples/mag_read.rs.
-# tmag5273 = { git = "https://github.com/dysonltd/tmag5273.git", version = "0.1.1" }
+tmag5273 = { path = "./tmag5273" }

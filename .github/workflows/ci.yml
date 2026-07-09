@@ -26,3 +26,16 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tmag5273
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml is picked up automatically; rustup installs the
+      # pinned nightly on first run.
+      - name: Run TMAG5273 driver tests
+        run: cargo test
