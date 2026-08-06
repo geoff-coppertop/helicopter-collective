@@ -12,6 +12,12 @@ I've lifted individual hardware examples from,
 
 This project uses similar hardware to implement a [3D mouse](https://github.com/sb-ocr/diy-spacemouse).
 
+## Documentation
+
+- [Hardware & Memory Layout](docs/hardware.md)
+- [Development — build, debug, test, dev container](docs/development.md)
+- [Architecture — structure, dependencies, conventions](docs/architecture.md)
+
 ## Development Setup
 
 ### USB access to the Raspberry Pi Debug Probe

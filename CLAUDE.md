@@ -1,3 +1,24 @@
+# CLAUDE.md
+
+## Project Overview
+
+`helicopter-collective` is embedded Rust firmware for a helicopter collective controller built on the Raspberry Pi RP2350. It uses a TMAG5273 Hall-effect magnetometer over I2C to track position.
+
+See the [README](README.md) and [docs/](docs/) for full documentation:
+
+- [Hardware & Memory Layout](docs/hardware.md)
+- [Development — build, debug, test, dev container](docs/development.md)
+- [Architecture — structure, dependencies, conventions](docs/architecture.md)
+
+## Constraints for AI Assistants
+
+- **No host execution for the firmware binary:** the ARM-target code (`src/main.rs`, `examples/`) can't run with plain `cargo test` or on the host — it requires physical RP2350 hardware. Peripheral-free logic in `src/` (filters, unit conversion, status formatting, mDNS encoding) is target-gated so it *can* run on the host via `cargo test-host` — see [docs/development.md](docs/development.md#testing).
+- **No std on the ARM target:** don't introduce `std` types or `println!` into firmware/example code. Use `defmt` for logging and `heapless` or stack allocation for data structures.
+- **No heap:** there is no allocator. Avoid `Vec`, `String`, `Box`. Use fixed-size arrays, `heapless` collections, or stack-allocated types.
+- **Nightly required:** the codebase uses nightly-only features (`impl_trait_in_assoc_type`). Do not attempt to downgrade to stable.
+- **Peripheral ownership:** Embassy and Rust's ownership model ensure each peripheral is owned by exactly one task. Do not share peripherals without proper synchronization primitives (`Mutex`, channels).
+- **Prefer async delays:** `Timer::after().await` is preferred over blocking `cortex_m::delay`. `embassy_executor` runs cooperative async tasks.
+
 # Working conventions for this repo
 
 ## Git
